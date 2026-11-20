@@ -1,4 +1,4 @@
-"""Tests unitaires pour pivot_ai.cli."""
+"""Unit tests for handball_ai.cli."""
 
 from __future__ import annotations
 
@@ -9,227 +9,231 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from pivot_ai.cli import _charger_correspondances, commande_traiter, construire_parser, main
-from pivot_ai.pipeline import ResultatPipeline
-from tests.conftest import generer_video_factice
+from handball_ai.cli import _load_court_mapping, build_parser, main, process_command
+from handball_ai.pipeline import PipelineResult
+from tests.conftest import make_fake_video
 
 # ---------------------------------------------------------------------------
-# _charger_correspondances
+# _load_court_mapping
 # ---------------------------------------------------------------------------
 
 
-def test_charger_correspondances_json_valide(tmp_path: Path) -> None:
-    """JSON 4 points : dict de Correspondance avec tuples coerces aux bons types."""
-    chemin = tmp_path / "h.json"
-    contenu = {
-        "A": {"pixel": [100, 200], "terrain_m": [0.0, 0.0]},
-        "B": {"pixel": [1000, 200], "terrain_m": [40.0, 0.0]},
-        "C": {"pixel": [1000, 600], "terrain_m": [40.0, 20.0]},
-        "D": {"pixel": [100, 600], "terrain_m": [0.0, 20.0]},
+def test_load_court_mapping_valid_json(tmp_path: Path) -> None:
+    """4-point JSON: CourtPoint dict with tuples coerced to the right types."""
+    path = tmp_path / "m.json"
+    content = {
+        "A": {"pixel": [100, 200], "court_m": [0.0, 0.0]},
+        "B": {"pixel": [1000, 200], "court_m": [40.0, 0.0]},
+        "C": {"pixel": [1000, 600], "court_m": [40.0, 20.0]},
+        "D": {"pixel": [100, 600], "court_m": [0.0, 20.0]},
     }
-    chemin.write_text(json.dumps(contenu), encoding="utf-8")
+    path.write_text(json.dumps(content), encoding="utf-8")
 
-    res = _charger_correspondances(chemin)
-    assert set(res.keys()) == {"A", "B", "C", "D"}
+    res = _load_court_mapping(path)
+    assert set(res) == {"A", "B", "C", "D"}
     assert res["A"]["pixel"] == (100, 200)
-    assert res["A"]["terrain_m"] == (0.0, 0.0)
+    assert res["A"]["court_m"] == (0.0, 0.0)
     assert isinstance(res["A"]["pixel"][0], int)
-    assert isinstance(res["A"]["terrain_m"][0], float)
+    assert isinstance(res["A"]["court_m"][0], float)
 
 
-def test_charger_correspondances_ignore_cles_commentaire(tmp_path: Path) -> None:
-    """Les cles commencant par _ sont ignorees (commentaires)."""
-    chemin = tmp_path / "h.json"
-    contenu = {
-        "_commentaire": "doc inline",
-        "A": {"pixel": [0, 0], "terrain_m": [0.0, 0.0]},
-        "B": {"pixel": [1, 0], "terrain_m": [40.0, 0.0]},
-        "C": {"pixel": [1, 1], "terrain_m": [40.0, 20.0]},
-        "D": {"pixel": [0, 1], "terrain_m": [0.0, 20.0]},
+def test_load_court_mapping_ignores_comment_keys(tmp_path: Path) -> None:
+    """Keys starting with _ are ignored (comments)."""
+    path = tmp_path / "m.json"
+    content = {
+        "_comment": "inline doc",
+        "A": {"pixel": [0, 0], "court_m": [0.0, 0.0]},
+        "B": {"pixel": [1, 0], "court_m": [40.0, 0.0]},
+        "C": {"pixel": [1, 1], "court_m": [40.0, 20.0]},
+        "D": {"pixel": [0, 1], "court_m": [0.0, 20.0]},
     }
-    chemin.write_text(json.dumps(contenu), encoding="utf-8")
-    res = _charger_correspondances(chemin)
-    assert "_commentaire" not in res
+    path.write_text(json.dumps(content), encoding="utf-8")
+    res = _load_court_mapping(path)
+    assert "_comment" not in res
     assert len(res) == 4
 
 
-def test_charger_correspondances_moins_de_4_points(tmp_path: Path) -> None:
-    """Moins de 4 points : ValueError."""
-    chemin = tmp_path / "h.json"
-    contenu = {
-        "A": {"pixel": [0, 0], "terrain_m": [0.0, 0.0]},
-        "B": {"pixel": [1, 0], "terrain_m": [1.0, 0.0]},
+def test_load_court_mapping_fewer_than_4_points(tmp_path: Path) -> None:
+    """Fewer than 4 points: ValueError."""
+    path = tmp_path / "m.json"
+    content = {
+        "A": {"pixel": [0, 0], "court_m": [0.0, 0.0]},
+        "B": {"pixel": [1, 0], "court_m": [1.0, 0.0]},
     }
-    chemin.write_text(json.dumps(contenu), encoding="utf-8")
-    with pytest.raises(ValueError, match="minimum 4 points"):
-        _charger_correspondances(chemin)
+    path.write_text(json.dumps(content), encoding="utf-8")
+    with pytest.raises(ValueError, match="at least 4 points"):
+        _load_court_mapping(path)
 
 
-def test_charger_correspondances_json_malforme(tmp_path: Path) -> None:
-    """JSON casse : JSONDecodeError."""
-    chemin = tmp_path / "h.json"
-    chemin.write_text("{not valid json", encoding="utf-8")
+def test_load_court_mapping_malformed_json(tmp_path: Path) -> None:
+    """Broken JSON: JSONDecodeError."""
+    path = tmp_path / "m.json"
+    path.write_text("{not valid json", encoding="utf-8")
     with pytest.raises(json.JSONDecodeError):
-        _charger_correspondances(chemin)
+        _load_court_mapping(path)
 
 
-def test_charger_correspondances_structure_invalide(tmp_path: Path) -> None:
-    """Un point sans 'pixel' ou 'terrain_m' : ValueError."""
-    chemin = tmp_path / "h.json"
-    contenu = {
-        "A": {"pixel": [0, 0], "terrain_m": [0.0, 0.0]},
-        "B": {"pixel": [1, 0], "terrain_m": [1.0, 0.0]},
-        "C": {"pixel": [1, 1], "terrain_m": [1.0, 1.0]},
-        "D": {"pixel": [0, 1]},  # manque terrain_m
+def test_load_court_mapping_invalid_structure(tmp_path: Path) -> None:
+    """A point without 'pixel' or 'court_m': ValueError."""
+    path = tmp_path / "m.json"
+    content = {
+        "A": {"pixel": [0, 0], "court_m": [0.0, 0.0]},
+        "B": {"pixel": [1, 0], "court_m": [1.0, 0.0]},
+        "C": {"pixel": [1, 1], "court_m": [1.0, 1.0]},
+        "D": {"pixel": [0, 1]},  # court_m missing
     }
-    chemin.write_text(json.dumps(contenu), encoding="utf-8")
-    with pytest.raises(ValueError, match="terrain_m"):
-        _charger_correspondances(chemin)
+    path.write_text(json.dumps(content), encoding="utf-8")
+    with pytest.raises(ValueError, match="court_m"):
+        _load_court_mapping(path)
 
 
-def test_charger_correspondances_fichier_absent(tmp_path: Path) -> None:
-    """Fichier inexistant : FileNotFoundError."""
+def test_load_court_mapping_missing_file(tmp_path: Path) -> None:
+    """Missing file: FileNotFoundError."""
     with pytest.raises(FileNotFoundError):
-        _charger_correspondances(tmp_path / "absent.json")
+        _load_court_mapping(tmp_path / "missing.json")
 
 
-def test_charger_correspondances_exemple_docs_charge() -> None:
-    """L'exemple docs/correspondances_example.json est charge sans erreur."""
-    chemin = Path(__file__).parent.parent / "docs" / "correspondances_example.json"
-    if not chemin.exists():
-        pytest.skip(f"Exemple absent : {chemin}")
-    res = _charger_correspondances(chemin)
-    assert len(res) >= 4
+@pytest.mark.parametrize(
+    "relative_path", ["docs/court_mapping_example.json", "data/court_mapping.json"]
+)
+def test_load_court_mapping_repository_examples(relative_path: str) -> None:
+    """The court mappings shipped with the repository load without error."""
+    path = Path(__file__).parent.parent / relative_path
+    assert len(_load_court_mapping(path)) >= 4
 
 
 # ---------------------------------------------------------------------------
-# commande_traiter (avec mock du pipeline)
+# process_command (with a mocked pipeline)
 # ---------------------------------------------------------------------------
 
 
-def _ecrire_homographie_4pts(tmp_path: Path) -> Path:
-    chemin = tmp_path / "h.json"
-    chemin.write_text(
+def _write_4pt_mapping(tmp_path: Path) -> Path:
+    path = tmp_path / "m.json"
+    path.write_text(
         json.dumps({
-            "A": {"pixel": [0, 0], "terrain_m": [0.0, 0.0]},
-            "B": {"pixel": [320, 0], "terrain_m": [40.0, 0.0]},
-            "C": {"pixel": [320, 240], "terrain_m": [40.0, 20.0]},
-            "D": {"pixel": [0, 240], "terrain_m": [0.0, 20.0]},
+            "A": {"pixel": [0, 0], "court_m": [0.0, 0.0]},
+            "B": {"pixel": [320, 0], "court_m": [40.0, 0.0]},
+            "C": {"pixel": [320, 240], "court_m": [40.0, 20.0]},
+            "D": {"pixel": [0, 240], "court_m": [0.0, 20.0]},
         }),
         encoding="utf-8",
     )
-    return chemin
+    return path
 
 
-def test_commande_traiter_video_inexistante(tmp_path: Path) -> None:
-    """Video absente : code de sortie 1."""
-    h = _ecrire_homographie_4pts(tmp_path)
-    parser = construire_parser()
-    args = parser.parse_args([
-        "traiter",
-        "--video", str(tmp_path / "absent.mp4"),
+def test_process_command_missing_video(tmp_path: Path) -> None:
+    """Missing video: exit code 1."""
+    args = build_parser().parse_args([
+        "process",
+        "--video", str(tmp_path / "missing.mp4"),
         "--output", str(tmp_path / "out"),
-        "--homographie", str(h),
-        "--modele", str(tmp_path / "modele.pt"),
+        "--court-mapping", str(_write_4pt_mapping(tmp_path)),
+        "--model", str(tmp_path / "model.pt"),
     ])
-    assert commande_traiter(args) == 1
+    assert process_command(args) == 1
 
 
-def test_commande_traiter_homographie_invalide(tmp_path: Path) -> None:
-    """Homographie a 2 points : code de sortie 1, message d'erreur logge."""
+def test_process_command_invalid_court_mapping(tmp_path: Path) -> None:
+    """2-point court mapping: exit code 1 and logged error."""
     source = tmp_path / "vid.mp4"
-    generer_video_factice(source, nb_frames=10, fps=25.0, largeur=320, hauteur=240)
-    h = tmp_path / "h.json"
-    h.write_text(
-        json.dumps({"A": {"pixel": [0, 0], "terrain_m": [0.0, 0.0]}}),
-        encoding="utf-8",
-    )
-    parser = construire_parser()
-    args = parser.parse_args([
-        "traiter",
+    make_fake_video(source, nb_frames=10, fps=25.0, width=320, height=240)
+    mapping = tmp_path / "m.json"
+    mapping.write_text(json.dumps({"A": {"pixel": [0, 0], "court_m": [0.0, 0.0]}}), encoding="utf-8")
+    args = build_parser().parse_args([
+        "process",
         "--video", str(source),
         "--output", str(tmp_path / "out"),
-        "--homographie", str(h),
-        "--modele", str(tmp_path / "modele.pt"),
+        "--court-mapping", str(mapping),
+        "--model", str(tmp_path / "model.pt"),
     ])
-    assert commande_traiter(args) == 1
+    assert process_command(args) == 1
 
 
-def test_commande_traiter_utilise_calibration_associee(tmp_path: Path) -> None:
-    """Pipeline mocke : commande_traiter retourne 0 et appelle traiter_match_complet."""
+def test_process_command_uses_mapping_next_to_video(tmp_path: Path) -> None:
+    """Mocked pipeline: process_command returns 0 and calls process_match."""
     source = tmp_path / "vid.mp4"
-    generer_video_factice(source, nb_frames=10, fps=25.0, largeur=320, hauteur=240)
-    _ecrire_homographie_4pts(tmp_path).rename(tmp_path / "vid.mp4.correspondances.json")
-    sortie = tmp_path / "out"
+    make_fake_video(source, nb_frames=10, fps=25.0, width=320, height=240)
+    _write_4pt_mapping(tmp_path).rename(tmp_path / "vid.mp4.court_mapping.json")
+    output = tmp_path / "out"
 
-    resultat_mock = ResultatPipeline(
-        chemin_video_source=source,
-        chemin_video_radar=sortie / "match_radar_sbs.mp4",
-        stats_joueurs=pl.DataFrame({"tracker_id": [1]}),
-        positions_par_tracker={},
-        actions_detectees=[],
-        clips_decoupes=[],
-        metadonnees={"nb_trackers_total": 3, "nb_joueurs_classes": 2},
+    mock_result = PipelineResult(
+        source_video=source,
+        radar_video=output / "match_radar.mp4",
+        player_stats=pl.DataFrame({"tracker_id": [1]}),
+        positions_by_tracker={},
+        detected_actions=[],
+        action_clips=[],
+        metadata={"nb_trackers_total": 3, "nb_classified_players": 2},
     )
 
-    parser = construire_parser()
-    args = parser.parse_args([
-        "traiter",
+    args = build_parser().parse_args([
+        "process",
         "--video", str(source),
-        "--output", str(sortie),
+        "--output", str(output),
         "--subsample", "3",
-        "--debut", "00:00:00:12",
-        "--duree", "0.2",
-        "--no-video-radar",
-        "--no-decoupage",
-        "--modele", "models/handball.pt",
+        "--start", "00:00:00:12",
+        "--duration", "0.2",
+        "--no-radar-video",
+        "--no-clips",
+        "--model", "models/handball.pt",
         "--exclude", "ball",
     ])
 
     with (
-        patch("pivot_ai.cli.Detector") as mock_detecteur,
-        patch("pivot_ai.cli.traiter_match_complet", return_value=resultat_mock) as mock_pipe,
+        patch("handball_ai.cli.Detector") as mock_detector,
+        patch("handball_ai.cli.process_match", return_value=mock_result) as mock_pipe,
     ):
-        code = commande_traiter(args)
-        mock_detecteur.assert_called_once_with(
+        assert process_command(args) == 0
+        mock_detector.assert_called_once_with(
             Path("models/handball.pt"), confidence=0.35, exclude=["ball"]
         )
-        assert code == 0
         mock_pipe.assert_called_once()
         kwargs = mock_pipe.call_args.kwargs
         assert kwargs["subsample"] == 3
-        assert kwargs["chemin_video"] == source
-        assert kwargs["debut"] == 0.12
-        assert kwargs["duree"] == 0.2
-        assert kwargs["generer_video_radar"] is False
-        assert kwargs["decouper_actions"] is False
-        assert kwargs["classer_equipes"] is False
-        assert kwargs["calculer_stats"] is False
-        assert len(kwargs["correspondances_homographie"]) == 4
-        assert kwargs["detecteur"] is mock_detecteur.return_value
+        assert kwargs["video_path"] == source
+        assert kwargs["start"] == 0.12
+        assert kwargs["duration"] == 0.2
+        assert kwargs["with_radar_video"] is False
+        assert kwargs["with_clips"] is False
+        assert kwargs["with_teams"] is False
+        assert kwargs["with_stats"] is False
+        assert len(kwargs["court_mapping"]) == 4
+        assert kwargs["detector"] is mock_detector.return_value
 
 
-def test_commande_traiter_pipeline_leve_exception(tmp_path: Path) -> None:
-    """Si traiter_match_complet leve une exception, code 1 et pas de crash."""
+def test_process_command_pipeline_raises(tmp_path: Path) -> None:
+    """When process_match raises, exit code 1 and no crash."""
     source = tmp_path / "vid.mp4"
-    generer_video_factice(source, nb_frames=10, fps=25.0, largeur=320, hauteur=240)
-    h = _ecrire_homographie_4pts(tmp_path)
-
-    parser = construire_parser()
-    args = parser.parse_args([
-        "traiter",
+    make_fake_video(source, nb_frames=10, fps=25.0, width=320, height=240)
+    args = build_parser().parse_args([
+        "process",
         "--video", str(source),
         "--output", str(tmp_path / "out"),
-        "--homographie", str(h),
-        "--modele", str(tmp_path / "modele.pt"),
+        "--court-mapping", str(_write_4pt_mapping(tmp_path)),
+        "--model", str(tmp_path / "model.pt"),
     ])
 
     with (
-        patch("pivot_ai.cli.Detector"),
-        patch("pivot_ai.cli.traiter_match_complet", side_effect=RuntimeError("boom")),
+        patch("handball_ai.cli.Detector"),
+        patch("handball_ai.cli.process_match", side_effect=RuntimeError("boom")),
     ):
-        code = commande_traiter(args)
-        assert code == 1
+        assert process_command(args) == 1
+
+
+def test_process_command_missing_model(tmp_path: Path) -> None:
+    """Missing weights file: exit code 1, pipeline not started."""
+    source = tmp_path / "vid.mp4"
+    make_fake_video(source, nb_frames=10, fps=25.0, width=320, height=240)
+    args = build_parser().parse_args([
+        "process",
+        "--video", str(source),
+        "--output", str(tmp_path / "out"),
+        "--court-mapping", str(_write_4pt_mapping(tmp_path)),
+        "--model", str(tmp_path / "missing.pt"),
+    ])
+    with patch("handball_ai.cli.process_match") as mock_pipe:
+        assert process_command(args) == 1
+    mock_pipe.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -237,46 +241,25 @@ def test_commande_traiter_pipeline_leve_exception(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_main_sans_commande_renvoie_erreur(capsys: pytest.CaptureFixture[str]) -> None:
-    """main() sans sous-commande : SystemExit (argparse)."""
+def test_main_without_command_fails() -> None:
+    """main() without a sub-command: SystemExit (argparse)."""
     with pytest.raises(SystemExit):
         main([])
 
 
-def test_parser_flags_par_defaut(tmp_path: Path) -> None:
-    """Sans --no-* : generation video et decoupage actives."""
-    h = _ecrire_homographie_4pts(tmp_path)
-    parser = construire_parser()
-    args = parser.parse_args([
-        "traiter",
-        "--video", "v.mp4",
-        "--output", "o",
-        "--homographie", str(h),
-        "--modele", str(tmp_path / "modele.pt"),
-    ])
-    assert args.no_video_radar is False
-    assert args.no_decoupage is False
-    assert args.subsample == 2
-
-
-def test_parser_exige_le_modele() -> None:
-    """--modele est obligatoire : argparse quitte avec le code 2."""
+def test_parser_requires_model() -> None:
+    """--model is required: argparse exits with code 2."""
     with pytest.raises(SystemExit) as exc:
-        construire_parser().parse_args(["traiter", "--video", "v.mp4", "--output", "out"])
+        build_parser().parse_args(["process", "--video", "v.mp4", "--output", "out"])
     assert exc.value.code == 2
 
 
-def test_commande_traiter_modele_absent(tmp_path: Path) -> None:
-    """Fichier de poids absent : code de sortie 1, pipeline non lance."""
-    source = tmp_path / "vid.mp4"
-    generer_video_factice(source, nb_frames=10, fps=25.0, largeur=320, hauteur=240)
-    args = construire_parser().parse_args([
-        "traiter",
-        "--video", str(source),
-        "--output", str(tmp_path / "out"),
-        "--homographie", str(_ecrire_homographie_4pts(tmp_path)),
-        "--modele", str(tmp_path / "absent.pt"),
+def test_parser_default_flags() -> None:
+    """Without --no-*: radar video and clips enabled."""
+    args = build_parser().parse_args([
+        "process", "--video", "v.mp4", "--output", "o", "--model", "m.pt",
     ])
-    with patch("pivot_ai.cli.traiter_match_complet") as mock_pipe:
-        assert commande_traiter(args) == 1
-    mock_pipe.assert_not_called()
+    assert args.no_radar_video is False
+    assert args.no_clips is False
+    assert args.subsample == 2
+    assert args.court_mapping is None

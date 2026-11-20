@@ -1,0 +1,13 @@
+{
+  "_comment": "Example court mapping used to calibrate the homography. Adjust the pixel coordinates to the calibration frame of your clip. court_m coordinates are fixed for a 40 m x 20 m handball court (see COURT_POINTS_M in handball_ai/config.py). At least 4 points; the more points, the more robust the estimate (RANSAC from 5 points).",
+  "A": {"pixel": [120, 540], "court_m": [0.0, 0.0]},
+  "B": {"pixel": [1800, 540], "court_m": [40.0, 0.0]},
+  "C": {"pixel": [1700, 300], "court_m": [40.0, 20.0]},
+  "D": {"pixel": [220, 300], "court_m": [0.0, 20.0]},
+  "E": {"pixel": [960, 540], "court_m": [20.0, 0.0]},
+  "F": {"pixel": [960, 300], "court_m": [20.0, 20.0]},
+  "M_prime": {"pixel": [150, 480], "court_m": [0.0, 8.5]},
+  "N_prime": {"pixel": [150, 380], "court_m": [0.0, 11.5]},
+  "M": {"pixel": [1770, 480], "court_m": [40.0, 8.5]},
+  "N": {"pixel": [1770, 380], "court_m": [40.0, 11.5]}
+}

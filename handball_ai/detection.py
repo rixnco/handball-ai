@@ -1,7 +1,7 @@
 """Handball object detection with a fine-tuned Ultralytics YOLO model.
 
 Detections are returned as `supervision.Detections` whose `class_id` follows
-`CLASSES_HANDBALL`, whatever the class order of the training dataset.
+`HANDBALL_CLASSES`, whatever the class order of the training dataset.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ import cv2
 import numpy as np
 import supervision as sv
 
-from pivot_ai.config import CLASSES_HANDBALL
-from pivot_ai.video import positionner_capture
+from handball_ai.config import HANDBALL_CLASSES
+from handball_ai.video import seek_capture
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def normalize_class_name(name: str) -> str:
 
 
 def build_class_map(model_names: dict[int, str], exclude: Iterable[str] = ()) -> dict[int, int]:
-    """Map the model class ids to `CLASSES_HANDBALL` ids by name.
+    """Map the model class ids to `HANDBALL_CLASSES` ids by name.
 
     Args:
         model_names: model class names, typically `model.names` from Ultralytics
@@ -51,7 +51,7 @@ def build_class_map(model_names: dict[int, str], exclude: Iterable[str] = ()) ->
         ValueError: unknown excluded class, model without handball classes,
             or no class left after exclusion.
     """
-    targets = {normalize_class_name(name): cid for name, cid in CLASSES_HANDBALL.items()}
+    targets = {normalize_class_name(name): cid for name, cid in HANDBALL_CLASSES.items()}
     names = {int(cid): normalize_class_name(name) for cid, name in model_names.items()}
     excluded = {normalize_class_name(name) for name in exclude}
 
@@ -64,7 +64,7 @@ def build_class_map(model_names: dict[int, str], exclude: Iterable[str] = ()) ->
     handball = {cid: targets[name] for cid, name in names.items() if name in targets}
     if not handball:
         raise ValueError(
-            f"The model has no handball class ({', '.join(CLASSES_HANDBALL)}). "
+            f"The model has no handball class ({', '.join(HANDBALL_CLASSES)}). "
             f"Model classes: {', '.join(model_names.values())}."
         )
     ignored = sorted(model_names[cid] for cid in names if cid not in handball)
@@ -78,7 +78,7 @@ def build_class_map(model_names: dict[int, str], exclude: Iterable[str] = ()) ->
 
 
 def to_handball_classes(detections: sv.Detections, class_map: dict[int, int]) -> sv.Detections:
-    """Keep the mapped classes and convert their ids to `CLASSES_HANDBALL`."""
+    """Keep the mapped classes and convert their ids to `HANDBALL_CLASSES`."""
     if detections.class_id is None or len(detections) == 0:
         return detections
     detections = detections[np.isin(detections.class_id, list(class_map))]
@@ -102,7 +102,7 @@ class Detector:
         device: str | None = None,
         exclude: Iterable[str] = (),
     ) -> None:
-        """Load the weights and map their classes to `CLASSES_HANDBALL`.
+        """Load the weights and map their classes to `HANDBALL_CLASSES`.
 
         Args:
             weights: fine-tuned YOLO weights file (.pt)
@@ -198,7 +198,7 @@ def detect_video(
     indices: list[int] = []
     nb_detected = 0
     try:
-        positionner_capture(cap, start_frame)
+        seek_capture(cap, start_frame)
         for index in range(total):
             ok, frame = cap.read()
             if not ok:

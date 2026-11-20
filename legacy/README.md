@@ -1,16 +1,16 @@
-# Code legacy
+# Legacy code
 
-`pipeline_original.py` contient le pipeline monolithique d'origine, qui sert de reference de specification pour le refactor.
+`pipeline_original.py` holds the original monolithic pipeline, kept as the specification reference for the refactor. It is left as it was written, in French.
 
-**Ne pas executer ce fichier directement.** Toute la logique doit etre migree dans les modules `pivot_ai/`.
+**Do not run this file directly.** All the logic must be migrated into the `handball_ai/` modules.
 
-Points cles a conserver lors du refactor :
-- Structure des detections via `supervision.Detections`
-- Tracking ByteTrack avec stabilisation classe par majority voting
-- Classification equipes KMeans sur couleur torse
-- Homographie 4-7 points avec fallback RANSAC
-- Filtre asymetrique `[0,40]x[2,18]`
-- Rendu radar avec lignes 6m/9m et arcs 9m
+Key points to keep during the refactor:
+- Detection structure with `supervision.Detections`
+- ByteTrack tracking with class stabilization by majority voting
+- Team classification with KMeans on the torso colour
+- 4-7 point homography with RANSAC fallback
+- Asymmetric filter `[0,40]x[2,18]`
+- Radar rendering with 6 m / 9 m lines and 9 m arcs
 
-Points a SUPPRIMER ou remplacer :
-- Dependance `detect.roboflow.com` (API cloud) -> inference locale via `DetecteurLocal`
+Points to REMOVE or replace:
+- Dependency on `detect.roboflow.com` (cloud API) -> local inference with `Detector`

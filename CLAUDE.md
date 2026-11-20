@@ -1,99 +1,100 @@
-# CLAUDE.md - Configuration projet pivot-ai-handball
+# CLAUDE.md - handball-ai project configuration
 
 ## Mission
 
-Pipeline computer vision pour scouting handball : detection, tracking, stats joueur, decoupage automatique en actions. Le repo a ete pre-scaffole : structure de dossiers, `pyproject.toml`, modules avec signatures et docstrings, tests squelettes. Le code legacy d'origine est dans `legacy/pipeline_original.py`.
+Computer vision pipeline for handball scouting: detection, tracking, player stats, automatic split into actions. The repository was pre-scaffolded: folder structure, `pyproject.toml`, modules with signatures and docstrings, skeleton tests. The original legacy code is in `legacy/pipeline_original.py`.
 
-## Contexte utilisateur
+## User context
 
-Tristan : data scientist freelance, code en Python avec conventions strictes :
-- snake_case **francais** pour variables/fonctions (`traiter_clip`, `calculer_distance_parcourue`)
-- Type hints obligatoires sur signatures publiques
-- Docstrings courtes en francais, style Google
-- Logging au lieu de print, pas de bare except
-- Pas de TODO laisses dans le code final, pas d'inventions sur les libs
+Tristan: freelance data scientist, writes Python with strict conventions:
+- **English** for everything: code, snake_case variables/functions (`process_clip`, `compute_distance_covered`), docstrings, comments, logs, CLI, notebooks and documentation
+- Type hints required on public signatures
+- Short Google-style docstrings
+- Logging instead of print, no bare except
+- No TODO left in the final code, no invented library APIs
 
-## Workflow git OBLIGATOIRE
+## MANDATORY git workflow
 
-- Branche `main` toujours stable
-- Une branche par feature : `feat/inference-locale`, `feat/stats-joueur`, etc.
-- Commits atomiques en francais
-- PR ouverte a la fin de chaque feature
+- `main` branch always stable
+- One branch per feature: `feat/local-inference`, `feat/player-stats`, etc.
+- Atomic commits in English
+- PR opened at the end of each feature
 
 ## Process
 
-1. Lire `legacy/pipeline_original.py` en entier AVANT de coder
-2. Proposer un plan detaille a Tristan en quelques lignes
-3. Attendre son GO
-4. Coder une etape a la fois, commit, passer a la suite
-5. A chaque etape, montrer un test concret qui prouve que ca marche
-6. Verifier les imports et signatures des libs (Ultralytics 8.3+, supervision 0.25+)
+1. Read `legacy/pipeline_original.py` entirely BEFORE coding
+2. Propose a detailed plan to Tristan in a few lines
+3. Wait for his GO
+4. Code one step at a time, commit, move on
+5. At each step, show a concrete test proving that it works
+6. Check the library imports and signatures (Ultralytics 8.3+, supervision 0.25+)
 
-## Etat actuel des modules
+## Current module status
 
-- `config.py` : COMPLET - constantes, TerrainConfig, points caracteristiques
-- `detection.py` : COMPLET - Detector (modele handball obligatoire) + detect_video
-- `tracking.py` : COMPLET - ByteTrack + stabilisation classe
-- `homographie.py` : COMPLET - calibrer_homographie avec fallback RANSAC
-- `equipes.py` : COMPLET - extraire_couleur_torse + classifier_equipes
-- `radar.py` : COMPLET - dessiner_radar
-- `stats.py` : A IMPLEMENTER (skeletons avec NotImplementedError)
-- `decoupage.py` : A IMPLEMENTER (skeletons avec NotImplementedError)
-- `pipeline.py` : A IMPLEMENTER (orchestrateur principal)
-- `cli.py` : A FINALISER
+- `config.py`: COMPLETE - constants, CourtConfig, court reference points
+- `detection.py`: COMPLETE - Detector (handball model required) + detect_video
+- `tracking.py`: COMPLETE - ByteTrack / BoT-SORT + class stabilization
+- `homography.py`: COMPLETE - calibrate_homography with RANSAC fallback and fisheye correction
+- `teams.py`: COMPLETE - extract_torso_color + classify_teams
+- `radar.py`: COMPLETE - draw_radar
+- `stats.py`: COMPLETE - compute_player_stats, generate_player_heatmap, compute_defensive_block_width
+- `metrics.py`: COMPLETE - tracking quality KPIs (ID switches)
+- `clipping.py`: COMPLETE - detect_actions + cut_video_clips
+- `pipeline.py`: COMPLETE - process_match orchestrator
+- `cli.py`: COMPLETE - `handball-ai process`
 
-## Etapes du sprint
+## Sprint steps
 
-### Etape 1 : Valider l'existant (1h)
-Faire tourner `pytest tests/` et verifier que les modules deja implementes passent.
-Identifier les bugs eventuels dans les modules COMPLETS et les corriger.
+### Step 1: Validate the existing code (1h)
+Run `pytest tests/` and check that the implemented modules pass.
+Find possible bugs in the COMPLETE modules and fix them.
 
-### Etape 2 : Implementer stats.py (2h)
-- `calculer_stats_joueur` : DataFrame Polars avec toutes les colonnes specifiees
-- `generer_heatmap_joueur` : heatmap 2D avec lissage gaussien optionnel
-- `calculer_largeur_bloc_defensif` : DataFrame temporel
-- Tests : completer `tests/test_stats.py` (4 tests skippes a activer)
+### Step 2: Implement stats.py (2h)
+- `compute_player_stats`: Polars DataFrame with all the specified columns
+- `generate_player_heatmap`: 2D heatmap with optional Gaussian smoothing
+- `compute_defensive_block_width`: time series DataFrame
+- Tests: `tests/test_stats.py`
 
-### Etape 3 : Implementer decoupage.py (2h)
-- `detecter_actions` : machine a etats sur le nb de joueurs presents
-- `decouper_clips_video` : appels ffmpeg via subprocess
-- Tests : creer `tests/test_decoupage.py` avec sequence synthetique
+### Step 3: Implement clipping.py (2h)
+- `detect_actions`: state machine on the number of players present
+- `cut_video_clips`: ffmpeg calls through subprocess
+- Tests: `tests/test_clipping.py` with a synthetic sequence
 
-### Etape 4 : Implementer pipeline.py (3h)
-- `traiter_match_complet` : enchainer tous les modules
-- Interpolation lineaire des positions sur frames non-echantillonnees (uniquement pour rendu visuel)
-- Generation video SBS (broadcast + radar cote a cote)
-- Sauvegarde stats CSV et Parquet
+### Step 4: Implement pipeline.py (3h)
+- `process_match`: chain all the modules
+- Linear interpolation of the positions on non-sampled frames (visual rendering only)
+- Radar video generation (broadcast above the radar)
+- Stats saved as CSV and Parquet
 
-### Etape 5 : Finaliser cli.py (30 min)
-- Charger correspondances homographie depuis fichier JSON
-- Appeler `traiter_match_complet`
-- Output : message recap avec chemins des artefacts produits
+### Step 5: Finalize cli.py (30 min)
+- Load the court mapping from a JSON file
+- Call `process_match`
+- Output: summary message with the paths of the produced artefacts
 
-### Etape 6 : Notebook local end-to-end (1h)
-- Tester sur clip court (3-10s) d'abord
-- Valider sur clip 58s
+### Step 6: Local end-to-end notebook (1h)
+- Test on a short clip (3-10 s) first
+- Validate on a 58 s clip
 
-## Contraintes techniques
+## Technical constraints
 
 - Python 3.11+
-- Adapter la taille des lots à la mémoire du GPU.
-- Pas de torch.load arbitraire (verifier les checkpoints, eviter pickle non sigle)
+- Adapt the batch size to the GPU memory.
+- No arbitrary torch.load (check the checkpoints, avoid unsigned pickle)
 
-## Hors scope (Tristan a dit NON)
+## Out of scope (Tristan said NO)
 
-- Detection automatique des lignes terrain pour homographie auto -> plus tard
-- Identification individuelle des joueurs (numeros, noms) -> plus tard
-- Tracking multi-plans avec recalage automatique -> plus tard
-- Modele de classification d'evenements ML -> plus tard
-- SAM3 ou tout autre modele experimental -> plus tard
-- Interface web ou app -> plus tard
+- Automatic court line detection for an automatic homography -> later
+- Individual player identification (numbers, names) -> later
+- Multi-shot tracking with automatic re-registration -> later
+- ML event classification model -> later
+- SAM3 or any other experimental model -> later
+- Web interface or app -> later
 
-## Critere de fin de mission
+## Definition of done
 
-Le notebook `notebooks/pivot_ai.ipynb` s'exécute de bout en bout en local :
-- Entree : clip MP4 dans `data/raw_clips/` + correspondances homographie
-- Sortie : DataFrame stats joueurs + clips d'actions decoupes + video radar SBS
-- Pas d'intervention manuelle au-dela de la saisie homographie
+The `notebooks/handball_ai.ipynb` notebook runs end to end locally:
+- Input: MP4 clip in `data/raw_clips/` + court mapping
+- Output: player stats DataFrame + action clips + radar video
+- No manual step beyond entering the court mapping
 
-Et `pytest tests/ -v` passe au vert.
+And `pytest tests/ -v` is green.
