@@ -21,6 +21,9 @@ from handball_ai.video import seek_capture
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIDENCE = 0.35
+# Ultralytics trackers need low-confidence detections for their second
+# association stage; the tracker YAML thresholds decide which ones are used.
+DEFAULT_TRACKING_CONFIDENCE = 0.1
 
 
 class DetectorLike(Protocol):
@@ -99,6 +102,7 @@ class Detector:
         weights: str | Path,
         *,
         confidence: float = DEFAULT_CONFIDENCE,
+        tracking_confidence: float = DEFAULT_TRACKING_CONFIDENCE,
         device: str | None = None,
         exclude: Iterable[str] = (),
     ) -> None:
@@ -106,7 +110,9 @@ class Detector:
 
         Args:
             weights: fine-tuned YOLO weights file (.pt)
-            confidence: minimum confidence, between 0 and 1
+            confidence: minimum confidence for `detect`, between 0 and 1
+            tracking_confidence: minimum confidence of the detections fed to
+                the tracker by `track`, between 0 and 1
             device: "cuda", "cpu", "mps"... None lets Ultralytics choose
             exclude: model class names to ignore
 
@@ -117,13 +123,15 @@ class Detector:
         weights = Path(weights)
         if not weights.is_file():
             raise FileNotFoundError(f"Model weights not found: {weights}")
-        if not 0 <= confidence <= 1:
-            raise ValueError(f"Confidence must be between 0 and 1, got {confidence}")
+        for name, value in (("Confidence", confidence), ("Tracking confidence", tracking_confidence)):
+            if not 0 <= value <= 1:
+                raise ValueError(f"{name} must be between 0 and 1, got {value}")
 
         from ultralytics import YOLO  # lazy import: torch is slow to load
 
         self.model = YOLO(str(weights))
         self.confidence = confidence
+        self.tracking_confidence = tracking_confidence
         self.device = device
         self.class_map = build_class_map(self.model.names, exclude)
         logger.info(
@@ -132,9 +140,9 @@ class Detector:
             {self.model.names[cid]: target for cid, target in self.class_map.items()},
         )
 
-    def _options(self) -> dict:
+    def _options(self, confidence: float) -> dict:
         return {
-            "conf": self.confidence,
+            "conf": confidence,
             "classes": list(self.class_map),
             "device": self.device,
             "verbose": False,
@@ -142,18 +150,32 @@ class Detector:
 
     def detect(self, frames: list[np.ndarray]) -> list[sv.Detections]:
         """Detect objects on BGR frames, processed as a single batch."""
-        results = self.model.predict(frames, **self._options())
+        results = self.model.predict(frames, **self._options(self.confidence))
         return [
             to_handball_classes(sv.Detections.from_ultralytics(r), self.class_map)
             for r in results
         ]
 
     def track(self, frame: np.ndarray, tracker_config: str | Path) -> sv.Detections:
-        """Detect and track on one frame with the Ultralytics tracker (stateful)."""
+        """Detect and track on one frame with the Ultralytics tracker (stateful).
+
+        The tracker state persists between calls until `reset_tracking`.
+        """
         results = self.model.track(
-            frame, persist=True, tracker=str(tracker_config), **self._options()
+            frame,
+            persist=True,
+            tracker=str(tracker_config),
+            **self._options(self.tracking_confidence),
         )
         return to_handball_classes(sv.Detections.from_ultralytics(results[0]), self.class_map)
+
+    def reset_tracking(self) -> None:
+        """Drop the tracker state, so that the next `track` call starts a new video.
+
+        Ultralytics creates a new predictor, with fresh trackers, when
+        `model.predictor` is None.
+        """
+        self.model.predictor = None
 
 
 def detect_video(

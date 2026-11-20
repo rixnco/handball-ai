@@ -1,91 +1,167 @@
-"""Tracking tests: ghost removal, ID stability, effective frame rate."""
+"""Tracking tests: frame sampling, tracker reset, class stabilization, configurations.
+
+The real trackers run inside Ultralytics `model.track` and need YOLO weights;
+here a stub detector checks what `track_video` controls.
+"""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
+import pytest
 import supervision as sv
+import yaml
 
-from handball_ai.tracking import track_detections
+from handball_ai.config import HANDBALL_CLASSES
+from handball_ai.tracking import TRACKER_CONFIGS, majority_class, track_video
+from tests.conftest import make_fake_video
+
+PLAYER = HANDBALL_CLASSES["players"]
+REFEREE = HANDBALL_CLASSES["referees"]
 
 
-def _det(x: float, y: float, class_id: int = 0) -> sv.Detections:
-    """A 20x40 px detection with its top left corner at (x, y)."""
+def _tracked(tracker_ids: list[int], class_ids: list[int]) -> sv.Detections:
     return sv.Detections(
-        xyxy=np.array([[x, y, x + 20, y + 40]], dtype=np.float32),
-        confidence=np.array([0.9], dtype=np.float32),
-        class_id=np.array([class_id], dtype=int),
+        xyxy=np.tile(np.array([0, 0, 10, 20], dtype=np.float32), (len(tracker_ids), 1)),
+        confidence=np.full(len(tracker_ids), 0.9, dtype=np.float32),
+        class_id=np.array(class_ids, dtype=int),
+        tracker_id=np.array(tracker_ids, dtype=int),
     )
 
 
-def _moving_object(nb_frames: int, x0: float, dx: float) -> dict[int, sv.Detections]:
-    """An object moving steadily, present on every frame."""
-    return {fi: _det(x0 + fi * dx, 100.0) for fi in range(nb_frames)}
+class StubTracker:
+    """Records the calls and returns one tracked player per frame (tracker_id 1)."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.configs: list[Path] = []
+
+    def reset_tracking(self) -> None:
+        self.calls.append("reset")
+
+    def track(self, frame: np.ndarray, tracker_config: str | Path) -> sv.Detections:
+        self.calls.append("track")
+        self.configs.append(Path(tracker_config))
+        return _tracked([1], [PLAYER])
 
 
-def test_persistent_object_gets_a_stable_id() -> None:
-    """An object present on many frames gets a single tracker_id."""
-    seq = _moving_object(nb_frames=20, x0=100.0, dx=2.0)
-    _dets, final_class = track_detections(seq, fps=30.0, subsample=1)
-    assert len(final_class) == 1
-    assert next(iter(final_class.values())) == 0
+@pytest.fixture
+def video(tmp_path: Path) -> Path:
+    path = tmp_path / "clip.mp4"
+    make_fake_video(path, nb_frames=20, fps=25.0, width=64, height=48)
+    return path
 
 
-def test_one_frame_ghost_removed() -> None:
-    """A detection isolated on 1 frame creates no tracker (minimum_consecutive_frames)."""
-    seq: dict[int, sv.Detections] = {}
-    # Stable object over 15 frames (around x=100, moving slowly)
-    for fi in range(15):
-        seq[fi] = _det(100.0 + fi * 2, 100.0)
-    # Ghost: on frame 7, add a second isolated detection far away
-    x_obj = 100.0 + 7 * 2
-    seq[7] = sv.Detections(
-        xyxy=np.array(
-            [[x_obj, 100.0, x_obj + 20, 140.0], [500.0, 300.0, 520.0, 340.0]],
-            dtype=np.float32,
-        ),
-        confidence=np.array([0.9, 0.9], dtype=np.float32),
-        class_id=np.array([0, 0], dtype=int),
-    )
-    _dets, final_class = track_detections(
-        seq, fps=30.0, subsample=1, minimum_consecutive_frames=3
-    )
-    assert len(final_class) == 1
+# ---------------------------------------------------------------------------
+# track_video
+# ---------------------------------------------------------------------------
 
 
-def test_effective_frame_rate_accounts_for_subsample() -> None:
-    """The frame rate given to ByteTrack accounts for the subsample.
-
-    Checked indirectly: with subsample=3 and fps=30, the tracker works
-    (effective frame rate = 10) and tracks the object as a single ID.
-    """
-    seq = _moving_object(nb_frames=15, x0=100.0, dx=3.0)
-    _dets, final_class = track_detections(seq, fps=30.0, subsample=3)
-    assert len(final_class) == 1
+def test_track_video_resets_before_the_first_frame(video: Path) -> None:
+    """The tracker is reset once, before any frame: no ID carries over between videos."""
+    stub = StubTracker()
+    track_video(video, stub)
+    assert stub.calls[0] == "reset"
+    assert stub.calls.count("reset") == 1
+    assert stub.calls.count("track") == 20
 
 
-def test_minimum_consecutive_frames_can_be_disabled() -> None:
-    """With minimum_consecutive_frames=1, an ID is assigned on the first frame."""
-    seq = _moving_object(nb_frames=5, x0=100.0, dx=1.0)
-    tracked, _final_class = track_detections(
-        seq, fps=30.0, subsample=1, minimum_consecutive_frames=1
-    )
-    first = tracked[0]
-    assert first.tracker_id is not None
-    assert len(first) == 1
+def test_track_video_resets_on_each_video(video: Path) -> None:
+    """Two videos with the same detector: one reset per video."""
+    stub = StubTracker()
+    track_video(video, stub)
+    track_video(video, stub)
+    assert stub.calls.count("reset") == 2
+    assert stub.calls[20 + 1] == "reset"
 
 
-def test_two_objects_two_ids() -> None:
-    """Two distinct persistent objects -> two trackers."""
-    seq: dict[int, sv.Detections] = {}
-    for fi in range(15):
-        seq[fi] = sv.Detections(
-            xyxy=np.array(
-                [[100 + fi * 2, 100, 120 + fi * 2, 140],
-                 [400 - fi * 2, 100, 420 - fi * 2, 140]],
-                dtype=np.float32,
-            ),
-            confidence=np.array([0.9, 0.9], dtype=np.float32),
-            class_id=np.array([0, 0], dtype=int),
-        )
-    _dets, final_class = track_detections(seq, fps=30.0, subsample=1)
-    assert len(final_class) == 2
+def test_track_video_subsample(video: Path) -> None:
+    """Only 1 frame out of `subsample` is tracked, indexed by its source position."""
+    stub = StubTracker()
+    tracked, final_class = track_video(video, stub, subsample=3)
+    assert sorted(tracked) == [0, 3, 6, 9, 12, 15, 18]
+    assert final_class == {1: PLAYER}
+
+
+def test_track_video_start_and_max_frames(video: Path) -> None:
+    """start_frame and max_frames limit the frames read; indices stay relative."""
+    stub = StubTracker()
+    tracked, _ = track_video(video, stub, start_frame=5, max_frames=8, subsample=2)
+    assert sorted(tracked) == [0, 2, 4, 6]
+
+
+@pytest.mark.parametrize("name", ["bytetrack", "botsort"])
+def test_track_video_uses_the_shipped_config(video: Path, name: str) -> None:
+    """Each backend passes its packaged YAML to the detector."""
+    stub = StubTracker()
+    track_video(video, stub, tracker=name, max_frames=2)
+    assert set(stub.configs) == {TRACKER_CONFIGS[name]}
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [({"tracker": "deepsort"}, "Unknown tracker"), ({"subsample": 0}, "subsample")],
+    ids=["unknown-tracker", "zero-subsample"],
+)
+def test_track_video_invalid_parameters(video: Path, params: dict, message: str) -> None:
+    """Invalid parameters raise ValueError before touching the tracker."""
+    stub = StubTracker()
+    with pytest.raises(ValueError, match=message):
+        track_video(video, stub, **params)
+    assert stub.calls == []
+
+
+def test_track_video_missing_video(tmp_path: Path) -> None:
+    """Unreadable video: RuntimeError."""
+    with pytest.raises(RuntimeError, match="Cannot open video"):
+        track_video(tmp_path / "missing.mp4", StubTracker())
+
+
+# ---------------------------------------------------------------------------
+# majority_class
+# ---------------------------------------------------------------------------
+
+
+def test_majority_class_stabilizes_flickering_class() -> None:
+    """A tracker seen 2 times as player and once as referee is a player."""
+    tracked = {
+        0: _tracked([7], [PLAYER]),
+        1: _tracked([7], [REFEREE]),
+        2: _tracked([7, 8], [PLAYER, REFEREE]),
+    }
+    assert majority_class(tracked) == {7: PLAYER, 8: REFEREE}
+
+
+def test_majority_class_ignores_untracked_frames() -> None:
+    """Frames without tracker_id are skipped."""
+    assert majority_class({0: sv.Detections.empty()}) == {}
+
+
+# ---------------------------------------------------------------------------
+# Tracker configurations
+# ---------------------------------------------------------------------------
+
+
+def _load(name: str) -> dict:
+    return yaml.safe_load(TRACKER_CONFIGS[name].read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("name", ["bytetrack", "botsort"])
+def test_tracker_config_shipped_in_package(name: str) -> None:
+    """Each configuration lives under handball_ai/trackers/ with the right type."""
+    path = TRACKER_CONFIGS[name]
+    assert path.is_file()
+    assert path.parent.name == "trackers"
+    assert path.parent.parent.name == "handball_ai"
+    cfg = _load(name)
+    assert cfg["tracker_type"] == name
+    assert cfg["track_low_thresh"] < cfg["track_high_thresh"] <= cfg["new_track_thresh"]
+
+
+def test_botsort_config_enables_reid() -> None:
+    """BoT-SORT uses ReID with the YOLO features and a longer buffer for occlusions."""
+    cfg = _load("botsort")
+    assert cfg["with_reid"] is True
+    assert cfg["model"] == "auto"
+    assert cfg["track_buffer"] > _load("bytetrack")["track_buffer"]

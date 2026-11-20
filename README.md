@@ -8,7 +8,7 @@ Computer vision pipeline for handball scouting: detection, tracking, per-player 
 handball-ai/
 ├── handball_ai/             # Main package
 │   ├── detection.py         # Local YOLO detection (GPU inference)
-│   ├── tracking.py          # ByteTrack / BoT-SORT + class stabilization
+│   ├── tracking.py          # Ultralytics ByteTrack / BoT-SORT + class stabilization
 │   ├── homography.py        # Pixel -> court coordinates projection
 │   ├── teams.py             # Team classification with KMeans
 │   ├── radar.py             # 2D radar rendering
@@ -194,7 +194,8 @@ Options:
 - `--no-clips`: does not cut the detected actions.
 - `--tracker {bytetrack,botsort}`: tracking backend. `bytetrack` (default,
   fast, motion only) or `botsort` (appearance ReID: keeps the IDs on
-  contact/occlusion, slower).
+  contact/occlusion, slower). Both run through Ultralytics `model.track` with
+  the configurations of `handball_ai/trackers/`.
 - `--min-track-frames N`: drops the trackers seen on fewer than N frames (fragments).
 
 For example, add `--start 00:01:00:25 --duration 30` to analyse 30 seconds from 1 min and 25 hundredths. The pipeline seeks to the closest frame in the source video and processes the sequence directly. Result timestamps start from zero.
@@ -281,9 +282,9 @@ Tests that need `ffmpeg` (3 video clipping tests) are skipped when `ffmpeg` is n
 - [x] Local inference notebook
 - [x] Fine-tuned handball YOLO model (4 classes) + training notebook
 - [x] Optional BoT-SORT + ReID tracker (keeps the IDs on contact)
+- [x] Single tracking path through Ultralytics trackers (no `sv.ByteTrack`)
 - [ ] Ball detection -> possession and passes
 - [ ] Event detection (shots, goals) with heuristics
-- [ ] Migration from `sv.ByteTrack` to the new supervision tracker (`>=0.30`)
 - [ ] Automatic detection of the attacking team (direction of play)
 - [ ] Automatic court line detection (automatic homography)
 - [ ] Individual player identification (jersey numbers)

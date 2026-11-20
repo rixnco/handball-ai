@@ -17,7 +17,6 @@ import supervision as sv
 
 from handball_ai.clipping import Action, cut_video_clips, detect_actions
 from handball_ai.config import HANDBALL_CLASSES, CourtConfig
-from handball_ai.detection import DetectorLike, detect_video
 from handball_ai.homography import CourtPoint, Homography, calibrate_homography
 from handball_ai.metrics import summarize_tracking_quality
 from handball_ai.radar import draw_radar
@@ -27,7 +26,7 @@ from handball_ai.stats import (
     compute_player_stats,
 )
 from handball_ai.teams import classify_teams
-from handball_ai.tracking import track_detections, track_video_botsort
+from handball_ai.tracking import TrackingDetector, track_video
 from handball_ai.video import seek_capture
 
 logger = logging.getLogger(__name__)
@@ -413,12 +412,11 @@ def process_match(
     video_path: str | Path,
     court_mapping: dict[str, CourtPoint],
     output_dir: str | Path,
-    detector: DetectorLike,
+    detector: TrackingDetector,
     subsample: int = 2,
     with_radar_video: bool = True,
     with_clips: bool = True,
     court_config: CourtConfig | None = None,
-    batch_size: int = 8,
     min_track_frames: int = 0,
     tracker: str = "bytetrack",
     duration: float | None = None,
@@ -434,17 +432,16 @@ def process_match(
         court_mapping: points used to calibrate the homography
         output_dir: folder for the statistics, radar video and clips
         detector: handball detector (`Detector`, or a stub in tests)
-        subsample: 1 frame out of N for the detection (2 by default)
+        subsample: 1 frame out of N fed to the tracker (2 by default)
         with_radar_video: generate the annotated video with the radar
         with_clips: cut the detected actions with ffmpeg
         court_config: court configuration (default: CourtConfig())
-        batch_size: detection batch size, to fit GPU memory
         min_track_frames: drop the trackers seen on fewer than N real frames
             (fragments). 0 disables the filter. ~8-12 is recommended in
             production to keep only usable trajectories.
         tracker: tracking backend. "bytetrack" (default, fast, motion only) or
             "botsort" (appearance ReID: keeps the IDs on contact/occlusion,
-            slower, needs a real YOLO model).
+            slower).
         duration: maximum duration in seconds from start
         with_teams: classify the teams by jersey colour
         with_stats: compute and write the player statistics
@@ -490,22 +487,14 @@ def process_match(
     )
 
     # 3-4. Detection + tracking with the chosen backend
-    if tracker == "botsort":
-        # BoT-SORT + ReID: detection and tracking coupled (stateful model.track).
-        tracked_detections, final_class = track_video_botsort(
-            source, detector, subsample=subsample, max_frames=frame_limit,
-            start_frame=start_frame,
-        )
-    elif tracker == "bytetrack":
-        detections_by_frame = dict(detect_video(
-            source, detector, subsample=subsample, batch_size=batch_size,
-            max_frames=frame_limit, start_frame=start_frame,
-        ))
-        tracked_detections, final_class = track_detections(
-            detections_by_frame, fps=fps, subsample=subsample
-        )
-    else:
-        raise ValueError(f"Unknown tracker: {tracker!r} (expected 'bytetrack' or 'botsort')")
+    tracked_detections, final_class = track_video(
+        source,
+        detector,
+        tracker=tracker,
+        subsample=subsample,
+        start_frame=start_frame,
+        max_frames=frame_limit,
+    )
 
     # 5. Teams (needs the sampled frames to read the colours)
     final_team: dict[int, int] = {}
