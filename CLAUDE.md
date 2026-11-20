@@ -32,7 +32,7 @@ Tristan : data scientist freelance, code en Python avec conventions strictes :
 ## Etat actuel des modules
 
 - `config.py` : COMPLET - constantes, TerrainConfig, points caracteristiques
-- `detection.py` : COMPLET - DetecteurLocal avec Ultralytics YOLO
+- `detection.py` : COMPLET - Detector (modele handball obligatoire) + detect_video
 - `tracking.py` : COMPLET - ByteTrack + stabilisation classe
 - `homographie.py` : COMPLET - calibrer_homographie avec fallback RANSAC
 - `equipes.py` : COMPLET - extraire_couleur_torse + classifier_equipes

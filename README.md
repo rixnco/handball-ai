@@ -30,13 +30,10 @@ pivot-ai-handball/
 └── pyproject.toml
 ```
 
-## Modele de detection : COCO generique vs fine-tune handball
+## Modele de detection handball
 
-Par defaut, le pipeline utilise **YOLO26m pre-entraine COCO** : il ne connait que la classe
-generique "person". Consequence : pas de distinction joueur / gardien / arbitre / ballon, et un
-tracking fragmente (beaucoup d'IDs pour peu de joueurs reels) car les detections sont bruitees.
-
-Pour un vrai saut de qualite, **entraine un modele specialise handball** :
+Le pipeline exige un modele YOLO **entraine sur le handball**, qui distingue joueurs, gardiens,
+arbitres et ballon. Il n'y a pas de modele generique par defaut. Pour l'entrainer :
 
 1. Ouvre `notebooks/train_handball_yolo.ipynb` avec le noyau Python du projet sous WSL et un GPU CUDA.
 2. Choisis un export parmi ceux recensés dans [la provenance des datasets](data/datasets/README.md).
@@ -48,17 +45,18 @@ Pour un vrai saut de qualite, **entraine un modele specialise handball** :
 4. Utilise le chemin affiché à l’export dans la cellule « Modele de detection » du notebook
    d’inférence.
 
-Le pipeline remappe les classes du modele vers `CLASSES_HANDBALL` **par nom** (pas par ordre), donc
-peu importe l'ordre des classes dans le dataset d'entrainement.
+Le detecteur convertit les classes du modele vers `CLASSES_HANDBALL` **par nom** (pas par ordre), donc
+peu importe l'ordre des classes dans le dataset d'entrainement. Un modele sans aucune classe handball
+est refuse au chargement.
 
 Depuis Python, indique le modèle explicitement :
 
 ```python
-from pivot_ai.config import ModeleConfig
+from pivot_ai.detection import Detector
 from pivot_ai.pipeline import traiter_match_complet
 
-config = ModeleConfig.pour_handball("models/handball_yolo26m.pt")
-traiter_match_complet(..., modele_config=config)
+detecteur = Detector("models/handball_yolo26m.pt", confidence=0.35, exclude=["ball"])
+traiter_match_complet(..., detecteur=detecteur)
 ```
 
 ### Extraire des images à annoter avec FFmpeg
@@ -166,13 +164,14 @@ Les résultats sont écrits dans `data/outputs/`.
 pivot-ai traiter \
   --video data/raw_clips/mon_clip.mp4 \
   --output data/outputs/ \
+  --modele models/handball_yolo26m.pt \
   --subsample 2
 ```
 
 Flags optionnels :
 - `--debut HH:MM:SS:cc` indique où commencer dans la vidéo, avec `cc` en centièmes de seconde (`00:00:00:00` par défaut). La notation FFmpeg `HH:MM:SS.cc` est aussi acceptée.
 - `--duree SECONDES` limite le traitement à cette durée à partir du début choisi. Sans cette option, le traitement va jusqu'à la fin de la vidéo.
-- `--modele models/handball_yolo26m.pt` : utilise les poids YOLO entraînés sur le handball. Par défaut, la CLI utilise YOLO26m COCO.
+- `--modele models/handball_yolo26m.pt` (obligatoire) : poids YOLO entraînés sur le handball.
 - `--homographie CHEMIN` : remplace le chemin de calibration déduit de la vidéo.
 - `--no-video-radar` désactive la vidéo de sortie. Par défaut, elle empile la source annotée et la projection. Chaque panneau mesure 1920 × 540 (32:9).
 - `--no-fisheye` désactive la correction radiale du radar. Par défaut, si A à F sont présents, elle utilise A–E–B et C–F–D et recale les quatre coins sur un rectangle de 40 × 20 m. La vidéo source reste intacte.
@@ -254,7 +253,7 @@ Tests qui requierent `ffmpeg` (3 tests de decoupage video) : auto-skip si `ffmpe
 
 - [x] Squelette repo
 - [x] Refactor du code legacy en modules
-- [x] Migration Roboflow Cloud -> inference locale GPU (`DetecteurLocal`)
+- [x] Migration Roboflow Cloud -> inference locale GPU (`Detector`)
 - [x] Module stats joueur (distance, vitesse, heatmap, bloc defensif)
 - [x] Decoupage actions par heuristique simple
 - [x] Pipeline match complet (avec interpolation et vidéo radar)

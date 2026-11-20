@@ -18,7 +18,7 @@ import supervision as sv
 from pivot_ai.video import positionner_capture
 
 if TYPE_CHECKING:
-    from pivot_ai.detection import DetecteurLocal
+    from pivot_ai.detection import Detector
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def tracker_detections(
 
 def tracker_video_botsort(
     chemin_video: str | Path,
-    detecteur: DetecteurLocal,
+    detecteur: Detector,
     subsample: int = 1,
     chemin_config: str | Path | None = None,
     max_frames: int | None = None,
@@ -113,12 +113,11 @@ def tracker_video_botsort(
     couples dans `model.track` (stateful, persist=True), donc cette fonction
     remplace a la fois detecter_video et tracker_detections.
 
-    Le remap eventuel des classes (modele handball -> CLASSES_HANDBALL) est
-    applique si le detecteur en a un.
+    Les classes sont converties vers CLASSES_HANDBALL par le detecteur.
 
     Args:
         chemin_video: chemin du MP4
-        detecteur: DetecteurLocal (expose .model YOLO Ultralytics)
+        detecteur: Detector handball
         subsample: 1 frame sur N fournie au tracker
         chemin_config: yaml BoT-SORT (defaut : config ReID livree)
         max_frames: nombre maximal d'images depuis frame_debut
@@ -131,8 +130,6 @@ def tracker_video_botsort(
     Raises:
         RuntimeError: si la video ne s'ouvre pas
     """
-    from pivot_ai.detection import _appliquer_remap
-
     config = str(chemin_config or CHEMIN_CONFIG_BOTSORT)
     cap = cv2.VideoCapture(str(chemin_video))
     if not cap.isOpened():
@@ -141,8 +138,6 @@ def tracker_video_botsort(
     if max_frames is not None:
         total = min(total, max_frames)
 
-    remap = getattr(detecteur, "remap_classes", None)
-    classes = detecteur._classes_predict
     detections_trackees: dict[int, sv.Detections] = {}
     classes_observees: dict[int, Counter] = defaultdict(Counter)
 
@@ -154,19 +149,7 @@ def tracker_video_botsort(
             if not ret:
                 break
             if fi % subsample == 0:
-                resultats = detecteur.model.track(
-                    frame,
-                    persist=True,
-                    tracker=config,
-                    conf=detecteur.config.confiance_min,
-                    iou=detecteur.config.iou_min,
-                    classes=classes,
-                    verbose=False,
-                    device=detecteur.config.device,
-                )
-                dets = sv.Detections.from_ultralytics(resultats[0])
-                if remap:
-                    dets = _appliquer_remap(dets, remap)
+                dets = detecteur.track(frame, config)
                 detections_trackees[fi] = dets
                 if dets.tracker_id is not None:
                     for i in range(len(dets)):

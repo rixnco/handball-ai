@@ -8,11 +8,11 @@ import logging
 import math
 import re
 import sys
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from pivot_ai.config import ModeleConfig, chemin_correspondances_video, configurer_logging
+from pivot_ai.config import chemin_correspondances_video, configurer_logging
+from pivot_ai.detection import DEFAULT_CONFIDENCE, Detector
 from pivot_ai.homographie import Correspondance
 from pivot_ai.pipeline import ResultatPipeline, traiter_match_complet
 
@@ -147,18 +147,11 @@ def commande_traiter(args: argparse.Namespace) -> int:
         logger.error("Erreur chargement homographie : %s", exc)
         return 1
 
-    modele_config = None
-    if args.modele is not None:
-        if not args.modele.is_file():
-            logger.error("Fichier de poids introuvable : %s", args.modele)
-            return 1
-        modele_config = ModeleConfig.pour_handball(str(args.modele))
-    if args.exclude:
-        modele_config = replace(
-            modele_config or ModeleConfig(), classes_a_exclure=tuple(args.exclude)
-        )
-    if args.conf is not None:
-        modele_config = replace(modele_config or ModeleConfig(), confiance_min=args.conf)
+    try:
+        detecteur = Detector(args.modele, confidence=args.conf, exclude=args.exclude or ())
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error("Erreur chargement modele : %s", exc)
+        return 1
 
     dossier_sortie = Path(args.output)
     dossier_sortie.mkdir(parents=True, exist_ok=True)
@@ -175,7 +168,7 @@ def commande_traiter(args: argparse.Namespace) -> int:
             chemin_video=chemin_video,
             correspondances_homographie=correspondances,
             dossier_sortie=dossier_sortie,
-            modele_config=modele_config,
+            detecteur=detecteur,
             subsample=args.subsample,
             generer_video_radar=not args.no_video_radar,
             decouper_actions=not args.no_decoupage,
@@ -253,7 +246,8 @@ def construire_parser() -> argparse.ArgumentParser:
     p_traiter.add_argument(
         "--modele",
         type=Path,
-        help="Fichier de poids YOLO entraîné sur le handball (par défaut : YOLO26m COCO)",
+        required=True,
+        help="Fichier de poids YOLO entraîné sur le handball (ex : models/handball_yolo26m.pt)",
     )
     p_traiter.add_argument(
         "--exclude",
@@ -264,8 +258,9 @@ def construire_parser() -> argparse.ArgumentParser:
     p_traiter.add_argument(
         "--conf",
         type=_seuil_confiance,
+        default=DEFAULT_CONFIDENCE,
         metavar="SEUIL",
-        help="Seuil de confiance YOLO entre 0 et 1 (par défaut 0.35).",
+        help=f"Seuil de confiance YOLO entre 0 et 1 (par défaut {DEFAULT_CONFIDENCE}).",
     )
     p_traiter.add_argument(
         "--subsample", type=int, default=2, help="1 frame sur N (defaut 2)"

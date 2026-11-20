@@ -1,215 +1,226 @@
-"""Detection d'objets via YOLO local (GPU ou CPU).
+"""Handball object detection with a fine-tuned Ultralytics YOLO model.
 
-Remplace la dependance Roboflow Cloud du pipeline d'origine. L'interface
-retourne des `supervision.Detections` pour compatibilite avec le tracking.
+Detections are returned as `supervision.Detections` whose `class_id` follows
+`CLASSES_HANDBALL`, whatever the class order of the training dataset.
 """
 
 from __future__ import annotations
 
 import logging
-from functools import cached_property
+from collections.abc import Iterable, Iterator
 from pathlib import Path
+from typing import Protocol
 
 import cv2
 import numpy as np
 import supervision as sv
 
-from pivot_ai.config import ModeleConfig, _normaliser_nom_classe, construire_remap_classes
+from pivot_ai.config import CLASSES_HANDBALL
 from pivot_ai.video import positionner_capture
 
 logger = logging.getLogger(__name__)
 
-
-def _appliquer_remap(dets: sv.Detections, remap: dict[int, int]) -> sv.Detections:
-    """Remappe les class_id d'un Detections et ecarte les classes inconnues."""
-    if dets.class_id is None or len(dets) == 0:
-        return dets
-    garder = np.array([int(c) in remap for c in dets.class_id], dtype=bool)
-    dets = dets[garder]
-    if len(dets) == 0 or dets.class_id is None:
-        return dets
-    dets.class_id = np.array([remap[int(c)] for c in dets.class_id], dtype=int)
-    return dets
+DEFAULT_CONFIDENCE = 0.35
 
 
-class DetecteurLocal:
-    """Wrapper autour d'Ultralytics YOLO pour inference locale.
+class DetectorLike(Protocol):
+    """Interface used by the pipeline, implemented by `Detector` and test stubs."""
 
-    Usage:
-        detecteur = DetecteurLocal(ModeleConfig())
-        detections = detecteur.detecter(frame)
-    """
-
-    def __init__(self, config: ModeleConfig | None = None) -> None:
-        from ultralytics import YOLO  # import lazy : evite de charger torch si inutile
-
-        self.config = config or ModeleConfig()
-        chemin = Path(self.config.chemin_modele)
-        logger.info("Chargement modele YOLO depuis %s (device=%s)", chemin, self.config.device)
-        self.model = YOLO(str(chemin))
-
-        # Remap eventuel des class_id du modele vers CLASSES_HANDBALL (par nom).
-        self.remap_classes: dict[int, int] | None = None
-        if self.config.remapper_vers_classes_handball:
-            noms = dict(self.model.names)  # {id: nom}
-            self.remap_classes = construire_remap_classes(noms)
-            if not self.remap_classes:
-                logger.warning(
-                    "Remap handball active mais aucun nom de classe du modele ne "
-                    "matche CLASSES_HANDBALL (noms=%s). Detections passees telles quelles.",
-                    noms,
-                )
-            else:
-                logger.info(
-                    "Remap classes modele -> handball : %s (noms modele : %s)",
-                    self.remap_classes,
-                    noms,
-                )
-
-        # Warmup : premiere inference est lente (compilation CUDA kernels)
-        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-        options_classes = {"classes": self._classes_predict} if self.config.classes_a_exclure else {}
-        self.model.predict(dummy, verbose=False, device=self.config.device, **options_classes)
-
-    @cached_property
-    def _classes_predict(self) -> list[int] | None:
-        """Liste des classes a passer a predict (None = toutes)."""
-        a_garder = self.config.classes_a_garder
-        if not self.config.classes_a_exclure:
-            return None if a_garder is None else list(a_garder)
-
-        noms = self.model.names
-        exclusions = {_normaliser_nom_classe(nom) for nom in self.config.classes_a_exclure}
-        noms_normalises = {cid: _normaliser_nom_classe(nom) for cid, nom in noms.items()}
-        inconnues = exclusions.difference(noms_normalises.values())
-        if inconnues:
-            raise ValueError(
-                f"Classes à exclure inconnues : {', '.join(sorted(inconnues))}. "
-                f"Classes du modèle : {', '.join(noms.values())}."
-            )
-        classes = [
-            cid for cid in (noms if a_garder is None else a_garder)
-            if noms_normalises.get(cid) not in exclusions
-        ]
-        if not classes:
-            raise ValueError("Aucune classe à détecter après application de --exclude.")
-        return classes
-
-    def detecter(self, frame: np.ndarray) -> sv.Detections:
-        """Detecte les objets dans une frame BGR.
-
-        Args:
-            frame: image BGR shape (H, W, 3)
-
-        Returns:
-            sv.Detections avec xyxy, confidence, class_id
-        """
-        results = self.model.predict(
-            frame,
-            conf=self.config.confiance_min,
-            iou=self.config.iou_min,
-            classes=self._classes_predict,
-            verbose=False,
-            device=self.config.device,
-        )
-        if not results:
-            return sv.Detections.empty()
-
-        # supervision sait parser directement les resultats Ultralytics
-        dets = sv.Detections.from_ultralytics(results[0])
-        if self.remap_classes:
-            dets = _appliquer_remap(dets, self.remap_classes)
-        return dets
-
-    def detecter_batch(self, frames: list[np.ndarray]) -> list[sv.Detections]:
-        """Detecte sur un batch de frames (plus rapide qu'en boucle)."""
-        results = self.model.predict(
-            frames,
-            conf=self.config.confiance_min,
-            iou=self.config.iou_min,
-            classes=self._classes_predict,
-            verbose=False,
-            device=self.config.device,
-        )
-        detections = [sv.Detections.from_ultralytics(r) for r in results]
-        if self.remap_classes:
-            detections = [_appliquer_remap(d, self.remap_classes) for d in detections]
-        return detections
+    def detect(self, frames: list[np.ndarray]) -> list[sv.Detections]: ...
 
 
-def detecter_video(
-    chemin_video: str | Path,
-    detecteur: DetecteurLocal,
-    subsample: int = 1,
-    max_frames: int | None = None,
-    batch_size: int = 8,
-    frame_debut: int = 0,
-) -> dict[int, sv.Detections]:
-    """Detecte sur toutes les frames d'une video (echantillonnees).
+def normalize_class_name(name: str) -> str:
+    """Normalize a class name: case, separators and simple plural."""
+    normalized = name.strip().lower().replace("_", " ").replace("-", " ")
+    if len(normalized) > 1 and normalized.endswith("s"):
+        normalized = normalized[:-1]
+    return normalized
 
-    Iteration sequentielle (`cap.read()` en continu) avec skip des frames
-    non echantillonnees, après un positionnement initial.
-    Batch les frames retenues avant `detecter_batch` pour saturer le GPU.
+
+def build_class_map(model_names: dict[int, str], exclude: Iterable[str] = ()) -> dict[int, int]:
+    """Map the model class ids to `CLASSES_HANDBALL` ids by name.
 
     Args:
-        chemin_video: chemin vers le MP4
-        detecteur: instance avec une methode `detecter_batch(list[ndarray])`
-        subsample: 1 frame sur N
-        max_frames: nombre maximal d'images depuis frame_debut
-        batch_size: taille de batch GPU (8 = bon defaut YOLO26m / 640px)
-        frame_debut: index de la première image dans la source
+        model_names: model class names, typically `model.names` from Ultralytics
+        exclude: class names to ignore
 
     Returns:
-        dict index relatif au début -> Detections
+        Model class id -> handball class id, for kept handball classes only.
+
+    Raises:
+        ValueError: unknown excluded class, model without handball classes,
+            or no class left after exclusion.
+    """
+    targets = {normalize_class_name(name): cid for name, cid in CLASSES_HANDBALL.items()}
+    names = {int(cid): normalize_class_name(name) for cid, name in model_names.items()}
+    excluded = {normalize_class_name(name) for name in exclude}
+
+    unknown = excluded.difference(names.values())
+    if unknown:
+        raise ValueError(
+            f"Unknown excluded classes: {', '.join(sorted(unknown))}. "
+            f"Model classes: {', '.join(model_names.values())}."
+        )
+    handball = {cid: targets[name] for cid, name in names.items() if name in targets}
+    if not handball:
+        raise ValueError(
+            f"The model has no handball class ({', '.join(CLASSES_HANDBALL)}). "
+            f"Model classes: {', '.join(model_names.values())}."
+        )
+    ignored = sorted(model_names[cid] for cid in names if cid not in handball)
+    if ignored:
+        logger.warning("Model classes ignored (not handball): %s", ", ".join(ignored))
+
+    class_map = {cid: target for cid, target in handball.items() if names[cid] not in excluded}
+    if not class_map:
+        raise ValueError("No class left to detect after exclusion.")
+    return class_map
+
+
+def to_handball_classes(detections: sv.Detections, class_map: dict[int, int]) -> sv.Detections:
+    """Keep the mapped classes and convert their ids to `CLASSES_HANDBALL`."""
+    if detections.class_id is None or len(detections) == 0:
+        return detections
+    detections = detections[np.isin(detections.class_id, list(class_map))]
+    detections.class_id = np.array([class_map[int(c)] for c in detections.class_id], dtype=int)
+    return detections
+
+
+class Detector:
+    """YOLO detector fine-tuned on handball.
+
+    Usage:
+        detector = Detector("models/handball_yolo26m.pt")
+        detections = detector.detect([frame])
+    """
+
+    def __init__(
+        self,
+        weights: str | Path,
+        *,
+        confidence: float = DEFAULT_CONFIDENCE,
+        device: str | None = None,
+        exclude: Iterable[str] = (),
+    ) -> None:
+        """Load the weights and map their classes to `CLASSES_HANDBALL`.
+
+        Args:
+            weights: fine-tuned YOLO weights file (.pt)
+            confidence: minimum confidence, between 0 and 1
+            device: "cuda", "cpu", "mps"... None lets Ultralytics choose
+            exclude: model class names to ignore
+
+        Raises:
+            FileNotFoundError: missing weights file
+            ValueError: invalid confidence or class configuration
+        """
+        weights = Path(weights)
+        if not weights.is_file():
+            raise FileNotFoundError(f"Model weights not found: {weights}")
+        if not 0 <= confidence <= 1:
+            raise ValueError(f"Confidence must be between 0 and 1, got {confidence}")
+
+        from ultralytics import YOLO  # lazy import: torch is slow to load
+
+        self.model = YOLO(str(weights))
+        self.confidence = confidence
+        self.device = device
+        self.class_map = build_class_map(self.model.names, exclude)
+        logger.info(
+            "Model %s loaded, classes: %s",
+            weights,
+            {self.model.names[cid]: target for cid, target in self.class_map.items()},
+        )
+
+    def _options(self) -> dict:
+        return {
+            "conf": self.confidence,
+            "classes": list(self.class_map),
+            "device": self.device,
+            "verbose": False,
+        }
+
+    def detect(self, frames: list[np.ndarray]) -> list[sv.Detections]:
+        """Detect objects on BGR frames, processed as a single batch."""
+        results = self.model.predict(frames, **self._options())
+        return [
+            to_handball_classes(sv.Detections.from_ultralytics(r), self.class_map)
+            for r in results
+        ]
+
+    def track(self, frame: np.ndarray, tracker_config: str | Path) -> sv.Detections:
+        """Detect and track on one frame with the Ultralytics tracker (stateful)."""
+        results = self.model.track(
+            frame, persist=True, tracker=str(tracker_config), **self._options()
+        )
+        return to_handball_classes(sv.Detections.from_ultralytics(results[0]), self.class_map)
+
+
+def detect_video(
+    video_path: str | Path,
+    detector: DetectorLike,
+    *,
+    subsample: int = 1,
+    batch_size: int = 8,
+    start_frame: int = 0,
+    max_frames: int | None = None,
+) -> Iterator[tuple[int, sv.Detections]]:
+    """Read the video sequentially and yield the detections of sampled frames.
+
+    Args:
+        video_path: video file
+        detector: object exposing `detect(list[ndarray])`
+        subsample: keep 1 frame out of N
+        batch_size: number of frames per detection call, to fit GPU memory
+        start_frame: first frame index in the source
+        max_frames: maximum number of frames read from start_frame
+
+    Yields:
+        (frame index relative to start_frame, detections), in video order.
+
+    Raises:
+        ValueError: invalid subsample or batch_size
+        RuntimeError: the video cannot be opened
     """
     if subsample < 1:
-        raise ValueError(f"subsample doit etre >= 1, recu {subsample}")
+        raise ValueError(f"subsample must be >= 1, got {subsample}")
     if batch_size < 1:
-        raise ValueError(f"batch_size doit etre >= 1, recu {batch_size}")
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
 
-    cap = cv2.VideoCapture(str(chemin_video))
+    cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        raise RuntimeError(f"Impossible d'ouvrir la video : {chemin_video}")
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - frame_debut
+        raise RuntimeError(f"Cannot open video: {video_path}")
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - start_frame
     if max_frames is not None:
         total = min(total, max_frames)
 
-    detections_par_frame: dict[int, sv.Detections] = {}
-    batch_frames: list[np.ndarray] = []
-    batch_indices: list[int] = []
-
-    def flush_batch() -> None:
-        if not batch_frames:
-            return
-        resultats = detecteur.detecter_batch(batch_frames)
-        for idx, dets in zip(batch_indices, resultats, strict=True):
-            detections_par_frame[idx] = dets
-        batch_frames.clear()
-        batch_indices.clear()
-
+    frames: list[np.ndarray] = []
+    indices: list[int] = []
+    nb_detected = 0
     try:
-        positionner_capture(cap, frame_debut)
-        fi = 0
-        while fi < total:
-            ret, frame = cap.read()
-            if not ret:
+        positionner_capture(cap, start_frame)
+        for index in range(total):
+            ok, frame = cap.read()
+            if not ok:
                 break
-            if fi % subsample == 0:
-                batch_frames.append(frame)
-                batch_indices.append(fi)
-                if len(batch_frames) >= batch_size:
-                    flush_batch()
-            fi += 1
-        flush_batch()
+            if index % subsample:
+                continue
+            frames.append(frame)
+            indices.append(index)
+            if len(frames) == batch_size:
+                yield from zip(indices, detector.detect(frames), strict=True)
+                nb_detected += len(frames)
+                frames, indices = [], []
+        if frames:
+            yield from zip(indices, detector.detect(frames), strict=True)
+            nb_detected += len(frames)
     finally:
         cap.release()
 
     logger.info(
-        "Detection video terminee : %d frames analysees sur %d total "
-        "(subsample=%d, batch_size=%d)",
-        len(detections_par_frame),
+        "Detection done: %d frames analysed out of %d (subsample=%d, batch_size=%d)",
+        nb_detected,
         total,
         subsample,
         batch_size,
     )
-    return detections_par_frame

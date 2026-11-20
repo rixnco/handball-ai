@@ -110,8 +110,8 @@ def test_inference_appelle_pipeline() -> None:
 def test_inference_propose_modele_handball() -> None:
     """Le notebook d'inference propose de charger le modele handball fine-tune."""
     contenu = NOTEBOOK_INFERENCE.read_text(encoding="utf-8")
-    assert "ModeleConfig.pour_handball" in contenu
-    assert "modele_config=modele_config" in contenu
+    assert "Detector(CHEMIN_MODELE_HANDBALL)" in contenu
+    assert "detecteur=detecteur" in contenu
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ def test_train_entraine_et_exporte() -> None:
     assert "model.train" in contenu
     assert "YOLO_BASE" in contenu
     assert "yolo26m" in contenu
-    assert "ModeleConfig.pour_handball" in contenu
+    assert "Detector(" in contenu
 
 
 # ---------------------------------------------------------------------------
