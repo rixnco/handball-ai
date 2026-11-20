@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import closing
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,12 @@ from handball_ai.stats import (
     compute_player_stats,
 )
 from handball_ai.teams import classify_teams
-from handball_ai.tracking import TrackingDetector, track_video
+from handball_ai.tracking import (
+    TrackingDetector,
+    TrackingSummary,
+    summarize_tracks,
+    track_video,
+)
 from handball_ai.video import seek_capture
 
 logger = logging.getLogger(__name__)
@@ -239,6 +245,55 @@ def tracker_color(
 
 
 # ---------------------------------------------------------------------------
+# Box drawing, shared by the annotated videos
+# ---------------------------------------------------------------------------
+
+
+def track_id_color(tracker_id: int) -> tuple[int, int, int]:
+    """Return a BGR colour per tracker_id, so that ID switches are visible."""
+    return sv.ColorPalette.DEFAULT.by_idx(tracker_id).as_bgr()
+
+
+def draw_tracked_boxes(
+    image: np.ndarray,
+    detections: sv.Detections,
+    color_of: Callable[[int], tuple[int, int, int]],
+    scale: tuple[float, float] = (1.0, 1.0),
+    thickness: int = 2,
+    font_scale: float = 0.5,
+) -> None:
+    """Draw the boxes and tracker_ids of tracked detections, in place.
+
+    Args:
+        image: BGR image to draw on
+        detections: detections with tracker_id (untracked ones are skipped)
+        color_of: tracker_id -> BGR colour
+        scale: (sx, sy) factors from the detection coordinates to the image
+        thickness: box line thickness in pixels
+        font_scale: OpenCV font scale of the tracker_id label
+    """
+    if detections.tracker_id is None:
+        return
+    sx, sy = scale
+    for xyxy, tid in zip(detections.xyxy, detections.tracker_id, strict=True):
+        color = color_of(int(tid))
+        x1, y1, x2, y2 = xyxy
+        p1 = (int(x1 * sx), int(y1 * sy))
+        p2 = (int(x2 * sx), int(y2 * sy))
+        cv2.rectangle(image, p1, p2, color, thickness)
+        cv2.putText(
+            image,
+            str(int(tid)),
+            (p1[0], max(0, p1[1] - 5)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            color,
+            max(1, thickness // 2),
+            cv2.LINE_AA,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Video with the radar below the source
 # ---------------------------------------------------------------------------
 
@@ -332,26 +387,13 @@ def generate_radar_video(
 
             # Annotate the boxes (sampled frames only)
             dets = tracked_detections.get(fi)
-            if dets is not None and dets.tracker_id is not None:
-                sx = width / w
-                sy = height / h
-                for i in range(len(dets)):
-                    tid = int(dets.tracker_id[i])
-                    color = tracker_color(tid, final_class, final_team, home_cluster)
-                    x1, y1, x2, y2 = dets.xyxy[i]
-                    p1 = (int(x1 * sx), int(y1 * sy))
-                    p2 = (int(x2 * sx), int(y2 * sy))
-                    cv2.rectangle(broadcast, p1, p2, color, 2)
-                    cv2.putText(
-                        broadcast,
-                        str(tid),
-                        (p1[0], max(0, p1[1] - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        color,
-                        1,
-                        cv2.LINE_AA,
-                    )
+            if dets is not None:
+                draw_tracked_boxes(
+                    broadcast,
+                    dets,
+                    lambda tid: tracker_color(tid, final_class, final_team, home_cluster),
+                    scale=(width / w, height / h),
+                )
 
             # Radar: positions of the current frame (interpolated included)
             radar_positions = [
@@ -384,6 +426,38 @@ def _read_video_metadata(path: Path) -> tuple[float, int]:
     if fps <= 0 or nb <= 0:
         raise RuntimeError(f"Invalid video metadata: fps={fps}, n={nb}")
     return fps, nb
+
+
+def frame_window(
+    fps: float, nb_source_frames: int, start: float, duration: float | None
+) -> tuple[int, int | None, int]:
+    """Convert a start and a duration in seconds into source frames.
+
+    Args:
+        fps: frame rate of the video
+        nb_source_frames: number of frames of the video
+        start: start position in seconds
+        duration: maximum duration in seconds from start, None for the end
+
+    Returns:
+        (start_frame, frame_limit, nb_frames): first frame, maximum number of
+        frames to read (None up to the end) and number of frames covered.
+
+    Raises:
+        ValueError: start outside the video, or non positive duration
+    """
+    if not math.isfinite(start) or not 0 <= start < nb_source_frames / fps:
+        raise ValueError("The start must be inside the video")
+    start_frame = min(round(start * fps), nb_source_frames - 1)
+    nb_frames = nb_source_frames - start_frame
+    frame_limit = None
+    if duration is not None:
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("The duration must be finite and strictly positive")
+        if duration < nb_frames / fps:
+            frame_limit = math.ceil(duration * fps)
+            nb_frames = frame_limit
+    return start_frame, frame_limit, nb_frames
 
 
 def _read_indexed_frames(
@@ -471,17 +545,9 @@ def process_match(
 
     # 2. Video metadata
     fps, nb_source_frames = _read_video_metadata(source)
-    if not math.isfinite(start) or not 0 <= start < nb_source_frames / fps:
-        raise ValueError("The start must be inside the video")
-    start_frame = min(round(start * fps), nb_source_frames - 1)
-    nb_frames_total = nb_source_frames - start_frame
-    frame_limit = None
-    if duration is not None:
-        if not math.isfinite(duration) or duration <= 0:
-            raise ValueError("The duration must be finite and strictly positive")
-        if duration < nb_frames_total / fps:
-            frame_limit = math.ceil(duration * fps)
-            nb_frames_total = frame_limit
+    start_frame, frame_limit, nb_frames_total = frame_window(
+        fps, nb_source_frames, start, duration
+    )
     logger.info(
         "Video: %d frames at %.1f fps, from frame %d", nb_frames_total, fps, start_frame
     )
@@ -620,5 +686,190 @@ def process_match(
         positions_by_tracker=positions_by_tracker,
         detected_actions=actions,
         action_clips=clips,
+        metadata=metadata,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tracking-only pipeline
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TrackClipResult:
+    """Result of `track_clip`.
+
+    Attributes:
+        source_video: input video
+        tracking_video: annotated video when generated, else None
+        summary_path: JSON file holding `summary` and `metadata`
+        summary: figures of the tracking run
+        tracked_detections: frame index (relative to the start) -> Detections
+            with tracker_id, for the analysed frames
+        final_class: tracker_id -> stabilized class
+        metadata: information dict (fps, start frame, tracker, etc.)
+    """
+
+    source_video: Path
+    tracking_video: Path | None
+    summary_path: Path
+    summary: TrackingSummary
+    tracked_detections: dict[int, sv.Detections]
+    final_class: dict[int, int]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def write_tracking_video(
+    source_video: str | Path,
+    tracked_detections: dict[int, sv.Detections],
+    output_path: str | Path,
+    start_frame: int = 0,
+    max_frames: int | None = None,
+) -> Path:
+    """Write the source video with the tracked boxes and their tracker_id.
+
+    Each tracker_id has its own colour. Between two analysed frames, the
+    boxes of the last analysed frame stay displayed. Output at the source
+    resolution and frame rate, mp4v encoding.
+
+    Args:
+        source_video: original video
+        tracked_detections: frame index (relative to start_frame) -> Detections
+        output_path: output MP4 path
+        start_frame: first frame index in the source
+        max_frames: maximum number of frames written
+
+    Returns:
+        Path of the generated file.
+
+    Raises:
+        RuntimeError: the source or the writer cannot be opened
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cap = cv2.VideoCapture(str(source_video))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {source_video}")
+    fps = float(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - start_frame
+    if max_frames is not None:
+        nb_frames = min(nb_frames, max_frames)
+
+    writer = cv2.VideoWriter(
+        str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
+    )
+    if not writer.isOpened():
+        cap.release()
+        raise RuntimeError(f"Cannot open VideoWriter: {output_path}")
+
+    # Line and text sizes follow the frame height (2 px and 0.6 at 1080p).
+    thickness = max(1, round(height / 540))
+    font_scale = 0.6 * height / 1080
+    shown = sv.Detections.empty()
+    try:
+        seek_capture(cap, start_frame)
+        for fi in range(nb_frames):
+            ok, frame = cap.read()
+            if not ok:
+                break
+            shown = tracked_detections.get(fi, shown)
+            draw_tracked_boxes(
+                frame, shown, track_id_color, thickness=thickness, font_scale=font_scale
+            )
+            writer.write(frame)
+    finally:
+        cap.release()
+        writer.release()
+
+    logger.info("Tracking video written: %s (%dx%d @ %.1f fps)", output_path, width, height, fps)
+    return output_path
+
+
+def track_clip(
+    video_path: str | Path,
+    detector: TrackingDetector,
+    output_dir: str | Path,
+    *,
+    tracker: str = "bytetrack",
+    subsample: int = 2,
+    start: float = 0.0,
+    duration: float | None = None,
+    with_video: bool = True,
+) -> TrackClipResult:
+    """Tracking-only pipeline: video -> tracks -> annotated video + summary.
+
+    Writes `tracking_summary.json` and, with `with_video`, `tracking.mp4`
+    into `output_dir`.
+
+    Args:
+        video_path: source video
+        detector: handball detector (`Detector`, or a stub in tests)
+        output_dir: output folder
+        tracker: "bytetrack" (fast, motion only) or "botsort" (ReID)
+        subsample: 1 frame out of N fed to the tracker
+        start: start position in seconds in the source video
+        duration: maximum duration in seconds from start, None for the end
+        with_video: write the annotated video
+
+    Returns:
+        TrackClipResult with the tracks, the summary and the produced files.
+
+    Raises:
+        FileNotFoundError: the source video does not exist
+        ValueError: invalid start, duration, tracker or subsample
+    """
+    source = Path(video_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Video not found: {source}")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+
+    fps, nb_source_frames = _read_video_metadata(source)
+    start_frame, frame_limit, nb_frames = frame_window(fps, nb_source_frames, start, duration)
+
+    tracked_detections, final_class = track_video(
+        source,
+        detector,
+        tracker=tracker,
+        subsample=subsample,
+        start_frame=start_frame,
+        max_frames=frame_limit,
+    )
+    summary = summarize_tracks(tracked_detections, final_class)
+
+    tracking_video: Path | None = None
+    if with_video:
+        tracking_video = write_tracking_video(
+            source,
+            tracked_detections,
+            output / "tracking.mp4",
+            start_frame=start_frame,
+            max_frames=frame_limit,
+        )
+
+    metadata: dict[str, Any] = {
+        "source_video": str(source),
+        "fps": fps,
+        "source_start_frame": start_frame,
+        "nb_frames": nb_frames,
+        "tracker": tracker,
+        "subsample": subsample,
+    }
+    summary_path = output / "tracking_summary.json"
+    summary_path.write_text(
+        json.dumps({"metadata": metadata, "summary": asdict(summary)}, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("Tracking summary: %s", asdict(summary))
+
+    return TrackClipResult(
+        source_video=source,
+        tracking_video=tracking_video,
+        summary_path=summary_path,
+        summary=summary,
+        tracked_detections=tracked_detections,
+        final_class=final_class,
         metadata=metadata,
     )

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -22,6 +23,7 @@ import cv2
 import numpy as np
 import supervision as sv
 
+from handball_ai.config import CLASS_NAMES
 from handball_ai.video import seek_capture
 
 logger = logging.getLogger(__name__)
@@ -123,3 +125,46 @@ def track_video(
         subsample,
     )
     return tracked_detections, final_class
+
+
+@dataclass(frozen=True)
+class TrackingSummary:
+    """Figures describing a tracking run.
+
+    Attributes:
+        nb_analysed_frames: frames fed to the tracker
+        nb_tracks: distinct tracker_ids
+        tracks_per_class: class name -> number of tracks (stabilized class)
+        mean_track_length: mean number of analysed frames per track
+        mean_objects_per_frame: mean number of tracked objects per analysed frame
+    """
+
+    nb_analysed_frames: int
+    nb_tracks: int
+    tracks_per_class: dict[str, int]
+    mean_track_length: float
+    mean_objects_per_frame: float
+
+
+def summarize_tracks(
+    tracked_detections: dict[int, sv.Detections],
+    final_class: dict[int, int],
+) -> TrackingSummary:
+    """Summarize a tracking run: tracks, their length and their class."""
+    lengths: Counter = Counter()
+    nb_objects = 0
+    for dets in tracked_detections.values():
+        if dets.tracker_id is None:
+            continue
+        lengths.update(int(tid) for tid in dets.tracker_id)
+        nb_objects += len(dets)
+
+    per_class = Counter(CLASS_NAMES.get(cid, str(cid)) for cid in final_class.values())
+    nb_frames = len(tracked_detections)
+    return TrackingSummary(
+        nb_analysed_frames=nb_frames,
+        nb_tracks=len(lengths),
+        tracks_per_class=dict(sorted(per_class.items())),
+        mean_track_length=sum(lengths.values()) / len(lengths) if lengths else 0.0,
+        mean_objects_per_frame=nb_objects / nb_frames if nb_frames else 0.0,
+    )

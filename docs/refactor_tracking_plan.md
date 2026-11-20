@@ -33,6 +33,9 @@ code path, then the pipeline stages are added back one at a time.
 
 ### Step 1: one tracking function
 
+Status: done, merged into `main`.
+
+
 - `track_video(video, detector, *, tracker="bytetrack" | "botsort", subsample,
   start_frame, max_frames)` in `tracking.py`, going through `Detector.track`
   with the Ultralytics trackers in both cases.
@@ -51,15 +54,26 @@ code path, then the pipeline stages are added back one at a time.
 
 ### Step 2: tracking-only pipeline
 
+Status: done on `refactor/tracking`.
+
+
 - `track_clip(video, detector, output_dir, ...)`: video -> tracking ->
-  annotated video (boxes + IDs) and a summary (number of tracks, mean length).
+  `tracking.mp4` (boxes + IDs, one colour per ID, boxes held between analysed
+  frames) and `tracking_summary.json` (number of tracks, tracks per class,
+  mean length, objects per frame).
 - No homography, teams, statistics or clips at this stage.
 
 ### Step 3: CLI
 
+Status: to do.
+
+
 - `handball-ai track <video> --model ...` to run the step 2 pipeline alone.
 
 ### Step 4: add the stages back
+
+Status: to do.
+
 
 One commit and one test per stage: court projection, teams, statistics, radar
 video, action clips.

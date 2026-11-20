@@ -14,7 +14,12 @@ import supervision as sv
 import yaml
 
 from handball_ai.config import HANDBALL_CLASSES
-from handball_ai.tracking import TRACKER_CONFIGS, majority_class, track_video
+from handball_ai.tracking import (
+    TRACKER_CONFIGS,
+    majority_class,
+    summarize_tracks,
+    track_video,
+)
 from tests.conftest import make_fake_video
 
 PLAYER = HANDBALL_CLASSES["players"]
@@ -136,6 +141,34 @@ def test_majority_class_stabilizes_flickering_class() -> None:
 def test_majority_class_ignores_untracked_frames() -> None:
     """Frames without tracker_id are skipped."""
     assert majority_class({0: sv.Detections.empty()}) == {}
+
+
+# ---------------------------------------------------------------------------
+# summarize_tracks
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_tracks() -> None:
+    """Tracks, their mean length, objects per frame and tracks per class."""
+    tracked = {
+        0: _tracked([1, 2], [PLAYER, REFEREE]),
+        2: _tracked([1], [PLAYER]),
+        4: _tracked([1, 3], [PLAYER, PLAYER]),
+    }
+    summary = summarize_tracks(tracked, majority_class(tracked))
+    assert summary.nb_analysed_frames == 3
+    assert summary.nb_tracks == 3
+    assert summary.tracks_per_class == {"players": 2, "referees": 1}
+    assert summary.mean_track_length == pytest.approx(5 / 3)
+    assert summary.mean_objects_per_frame == pytest.approx(5 / 3)
+
+
+def test_summarize_tracks_empty() -> None:
+    """No track: zeros, no division error."""
+    summary = summarize_tracks({0: sv.Detections.empty()}, {})
+    assert summary.nb_tracks == 0
+    assert summary.mean_track_length == 0.0
+    assert summary.mean_objects_per_frame == 0.0
 
 
 # ---------------------------------------------------------------------------

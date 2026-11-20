@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
@@ -18,12 +19,17 @@ from handball_ai.pipeline import (
     COLOR_HOME,
     COLOR_REF,
     PipelineResult,
+    TrackClipResult,
     filter_short_tracks,
+    frame_window,
     generate_radar_video,
     interpolate_positions,
     process_match,
     project_detections_to_court,
+    track_clip,
+    track_id_color,
     tracker_color,
+    write_tracking_video,
 )
 from handball_ai.stats import PlayerPosition
 from handball_ai.tracking import TRACKER_CONFIGS
@@ -335,3 +341,123 @@ def test_process_match_unknown_tracker_raises(tmp_path: Path) -> None:
             detector=StubDetector(),
             tracker="deepsort",
         )
+
+
+# ---------------------------------------------------------------------------
+# frame_window
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("start", "duration", "expected"),
+    [
+        (0.0, None, (0, None, 100)),
+        (1.0, None, (25, None, 75)),
+        (1.0, 2.0, (25, 50, 50)),
+        (1.0, 10.0, (25, None, 75)),
+    ],
+    ids=["whole", "start", "start-duration", "duration-past-end"],
+)
+def test_frame_window(
+    start: float, duration: float | None, expected: tuple[int, int | None, int]
+) -> None:
+    """Seconds are converted into start frame, frame limit and covered frames."""
+    assert frame_window(25.0, 100, start, duration) == expected
+
+
+@pytest.mark.parametrize(
+    ("start", "duration", "message"),
+    [(4.0, None, "start"), (-1.0, None, "start"), (0.0, 0.0, "duration")],
+    ids=["start-at-end", "negative-start", "zero-duration"],
+)
+def test_frame_window_invalid(start: float, duration: float | None, message: str) -> None:
+    """Start outside the video or non positive duration: ValueError."""
+    with pytest.raises(ValueError, match=message):
+        frame_window(25.0, 100, start, duration)
+
+
+# ---------------------------------------------------------------------------
+# Tracking-only pipeline
+# ---------------------------------------------------------------------------
+
+
+def _frame_count(path: Path) -> int:
+    cap = cv2.VideoCapture(str(path))
+    nb = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return nb
+
+
+def _read_frames(path: Path) -> list[np.ndarray]:
+    cap = cv2.VideoCapture(str(path))
+    frames = []
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frames.append(frame.astype(float))
+    cap.release()
+    return frames
+
+
+def test_write_tracking_video_holds_boxes_between_analysed_frames(tmp_path: Path) -> None:
+    """The boxes of the last analysed frame stay drawn on the skipped frames."""
+    source = tmp_path / "clip.mp4"
+    make_fake_video(source, nb_frames=4, fps=25.0, width=320, height=240)
+    detections = StubDetector().track(np.zeros((1, 1, 3), dtype=np.uint8), "unused")
+
+    annotated = _read_frames(write_tracking_video(source, {0: detections}, tmp_path / "a.mp4"))
+    plain = _read_frames(write_tracking_video(source, {}, tmp_path / "b.mp4"))
+
+    assert len(annotated) == len(plain) == 4
+    # Only frame 0 is analysed; the box (x=140..180, y=80..200) is drawn on all 4.
+    for with_box, without_box in zip(annotated, plain, strict=True):
+        left_edge = np.abs(with_box[90:190, 139:142] - without_box[90:190, 139:142])
+        inside = np.abs(with_box[90:190, 150:170] - without_box[90:190, 150:170])
+        assert left_edge.mean() > 30
+        assert inside.mean() < 5
+
+
+def test_track_clip_writes_video_and_summary(tmp_path: Path) -> None:
+    """track_clip writes the annotated video and the JSON summary."""
+    source = tmp_path / "clip.mp4"
+    make_fake_video(source, nb_frames=40, fps=25.0, width=320, height=240)
+    output = tmp_path / "out"
+
+    res = track_clip(source, StubDetector(), output, subsample=2, start=0.4, duration=1.0)
+
+    assert isinstance(res, TrackClipResult)
+    assert res.tracking_video == output / "tracking.mp4"
+    assert _frame_count(res.tracking_video) == 25
+    assert res.summary.nb_analysed_frames == 13
+    assert res.summary.nb_tracks == 1
+    assert res.summary.tracks_per_class == {"players": 1}
+    assert res.final_class == {1: HANDBALL_CLASSES["players"]}
+
+    saved = json.loads(res.summary_path.read_text(encoding="utf-8"))
+    assert saved["summary"]["nb_tracks"] == 1
+    assert saved["metadata"]["source_start_frame"] == 10
+    assert saved["metadata"]["nb_frames"] == 25
+    assert saved["metadata"]["tracker"] == "bytetrack"
+
+
+def test_track_clip_without_video(tmp_path: Path) -> None:
+    """with_video=False: summary only."""
+    source = tmp_path / "clip.mp4"
+    make_fake_video(source, nb_frames=10, fps=25.0, width=320, height=240)
+    res = track_clip(source, StubDetector(), tmp_path / "out", with_video=False)
+    assert res.tracking_video is None
+    assert not (tmp_path / "out" / "tracking.mp4").exists()
+    assert res.summary_path.exists()
+
+
+def test_track_clip_missing_video(tmp_path: Path) -> None:
+    """Missing source video: FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        track_clip(tmp_path / "missing.mp4", StubDetector(), tmp_path / "out")
+
+
+def test_track_id_color_is_stable_and_distinct() -> None:
+    """Same tracker_id, same colour; consecutive tracker_ids differ."""
+    assert track_id_color(1) == track_id_color(1)
+    assert track_id_color(1) != track_id_color(2)
