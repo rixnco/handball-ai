@@ -124,7 +124,7 @@ def test_train_utilise_roboflow_et_dataset() -> None:
     contenu = NOTEBOOK_TRAIN.read_text(encoding="utf-8")
     assert "roboflow" in contenu.lower()
     assert "handball-detection-fj8rc" in contenu
-    assert "handballdetectionvictorcollado" in contenu
+    assert "erics-workspace-it3ft" in contenu
     assert "ROBOFLOW_API_KEY" in contenu
 
 
@@ -132,7 +132,8 @@ def test_train_entraine_et_exporte() -> None:
     """Le notebook entraîne un YOLO et exporte best.pt dans le dossier models."""
     contenu = NOTEBOOK_TRAIN.read_text(encoding="utf-8")
     assert "model.train" in contenu
-    assert "handball_yolov8m.pt" in contenu
+    assert "YOLO_BASE" in contenu
+    assert "yolo26m" in contenu
     assert "ModeleConfig.pour_handball" in contenu
 
 

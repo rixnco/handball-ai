@@ -32,7 +32,7 @@ pivot-ai-handball/
 
 ## Modele de detection : COCO generique vs fine-tune handball
 
-Par defaut, le pipeline utilise **YOLOv8m pre-entraine COCO** : il ne connait que la classe
+Par defaut, le pipeline utilise **YOLO26m pre-entraine COCO** : il ne connait que la classe
 generique "person". Consequence : pas de distinction joueur / gardien / arbitre / ballon, et un
 tracking fragmente (beaucoup d'IDs pour peu de joueurs reels) car les detections sont bruitees.
 
@@ -43,8 +43,8 @@ Pour un vrai saut de qualite, **entraine un modele specialise handball** :
    Le notebook le cherche dans `data/datasets/`. Pour télécharger un export absent, utilise
    une clé Roboflow dans la variable d’environnement `ROBOFLOW_API_KEY`. Installe au besoin le SDK avec
    `python -m pip install roboflow`.
-3. Le notebook entraîne YOLOv8m, affiche les métriques et exporte les meilleurs poids vers
-   `models/handball_yolov8m.pt`.
+3. Le notebook entraîne YOLO26m (variable `YOLO_BASE`), affiche les métriques et exporte les meilleurs poids vers
+   `models/handball_yolo26m.pt`.
 4. Utilise le chemin affiché à l’export dans la cellule « Modele de detection » du notebook
    d’inférence.
 
@@ -57,7 +57,7 @@ Depuis Python, indique le modèle explicitement :
 from pivot_ai.config import ModeleConfig
 from pivot_ai.pipeline import traiter_match_complet
 
-config = ModeleConfig.pour_handball("models/handball_yolov8m.pt")
+config = ModeleConfig.pour_handball("models/handball_yolo26m.pt")
 traiter_match_complet(..., modele_config=config)
 ```
 
@@ -172,7 +172,7 @@ pivot-ai traiter \
 Flags optionnels :
 - `--debut HH:MM:SS:cc` indique où commencer dans la vidéo, avec `cc` en centièmes de seconde (`00:00:00:00` par défaut). La notation FFmpeg `HH:MM:SS.cc` est aussi acceptée.
 - `--duree SECONDES` limite le traitement à cette durée à partir du début choisi. Sans cette option, le traitement va jusqu'à la fin de la vidéo.
-- `--modele models/handball_yolov8m.pt` : utilise les poids YOLO entraînés sur le handball. Par défaut, la CLI utilise YOLOv8m COCO.
+- `--modele models/handball_yolo26m.pt` : utilise les poids YOLO entraînés sur le handball. Par défaut, la CLI utilise YOLO26m COCO.
 - `--homographie CHEMIN` : remplace le chemin de calibration déduit de la vidéo.
 - `--no-video-radar` désactive la vidéo de sortie. Par défaut, elle empile la source annotée et la projection. Chaque panneau mesure 1920 × 540 (32:9).
 - `--no-fisheye` désactive la correction radiale du radar. Par défaut, si A à F sont présents, elle utilise A–E–B et C–F–D et recale les quatre coins sur un rectangle de 40 × 20 m. La vidéo source reste intacte.
