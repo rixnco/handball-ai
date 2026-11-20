@@ -15,10 +15,10 @@
     "ROBOFLOW_API_KEY": "${localEnv:ROBOFLOW_API_KEY}"
   },
   "mounts": [
-    "source=pivot-ai-handball-pip-cache,target=/home/vscode/.cache/pip,type=volume",
-    "source=pivot-ai-handball-torch-cache,target=/home/vscode/.cache/torch,type=volume",
-    "source=pivot-ai-handball-torch-cache,target=/home/vscode/.cache/matplotlib,type=volume",
-    "source=pivot-ai-handball-ultralytics-cache,target=/home/vscode/.config/Ultralytics,type=volume"
+    "source=handball-ai-pip-cache,target=/home/vscode/.cache/pip,type=volume",
+    "source=handball-ai-torch-cache,target=/home/vscode/.cache/torch,type=volume",
+    "source=handball-ai-torch-cache,target=/home/vscode/.cache/matplotlib,type=volume",
+    "source=handball-ai-ultralytics-cache,target=/home/vscode/.config/Ultralytics,type=volume"
   ],
   "postCreateCommand": "python -m pip install --upgrade pip && python -m pip install -e '.[dev]' --extra-index-url https://download.pytorch.org/whl/cu132 -c .devcontainer/constraints.txt",
   "customizations": {
