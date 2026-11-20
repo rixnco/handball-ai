@@ -7,13 +7,15 @@ retourne des `supervision.Detections` pour compatibilite avec le tracking.
 from __future__ import annotations
 
 import logging
+from functools import cached_property
 from pathlib import Path
 
 import cv2
 import numpy as np
 import supervision as sv
 
-from pivot_ai.config import ModeleConfig, construire_remap_classes
+from pivot_ai.config import ModeleConfig, _normaliser_nom_classe, construire_remap_classes
+from pivot_ai.video import positionner_capture
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +68,32 @@ class DetecteurLocal:
 
         # Warmup : premiere inference est lente (compilation CUDA kernels)
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-        self.model.predict(dummy, verbose=False, device=self.config.device)
+        options_classes = {"classes": self._classes_predict} if self.config.classes_a_exclure else {}
+        self.model.predict(dummy, verbose=False, device=self.config.device, **options_classes)
 
-    @property
+    @cached_property
     def _classes_predict(self) -> list[int] | None:
         """Liste des classes a passer a predict (None = toutes)."""
-        if self.config.classes_a_garder is None:
-            return None
-        return list(self.config.classes_a_garder)
+        a_garder = self.config.classes_a_garder
+        if not self.config.classes_a_exclure:
+            return None if a_garder is None else list(a_garder)
+
+        noms = self.model.names
+        exclusions = {_normaliser_nom_classe(nom) for nom in self.config.classes_a_exclure}
+        noms_normalises = {cid: _normaliser_nom_classe(nom) for cid, nom in noms.items()}
+        inconnues = exclusions.difference(noms_normalises.values())
+        if inconnues:
+            raise ValueError(
+                f"Classes à exclure inconnues : {', '.join(sorted(inconnues))}. "
+                f"Classes du modèle : {', '.join(noms.values())}."
+            )
+        classes = [
+            cid for cid in (noms if a_garder is None else a_garder)
+            if noms_normalises.get(cid) not in exclusions
+        ]
+        if not classes:
+            raise ValueError("Aucune classe à détecter après application de --exclude.")
+        return classes
 
     def detecter(self, frame: np.ndarray) -> sv.Detections:
         """Detecte les objets dans une frame BGR.
@@ -123,23 +143,24 @@ def detecter_video(
     subsample: int = 1,
     max_frames: int | None = None,
     batch_size: int = 8,
+    frame_debut: int = 0,
 ) -> dict[int, sv.Detections]:
     """Detecte sur toutes les frames d'une video (echantillonnees).
 
     Iteration sequentielle (`cap.read()` en continu) avec skip des frames
-    non echantillonnees. Bannit `cap.set(CAP_PROP_POS_FRAMES, ...)` qui
-    re-decode depuis le keyframe precedent et explose les temps sur MP4.
+    non echantillonnees, après un positionnement initial.
     Batch les frames retenues avant `detecter_batch` pour saturer le GPU.
 
     Args:
         chemin_video: chemin vers le MP4
         detecteur: instance avec une methode `detecter_batch(list[ndarray])`
         subsample: 1 frame sur N
-        max_frames: limite optionnelle (sur la frame index source)
+        max_frames: nombre maximal d'images depuis frame_debut
         batch_size: taille de batch GPU (8 = bon defaut T4 / YOLOv8m / 640px)
+        frame_debut: index de la première image dans la source
 
     Returns:
-        dict frame_index -> Detections
+        dict index relatif au début -> Detections
     """
     if subsample < 1:
         raise ValueError(f"subsample doit etre >= 1, recu {subsample}")
@@ -149,7 +170,7 @@ def detecter_video(
     cap = cv2.VideoCapture(str(chemin_video))
     if not cap.isOpened():
         raise RuntimeError(f"Impossible d'ouvrir la video : {chemin_video}")
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - frame_debut
     if max_frames is not None:
         total = min(total, max_frames)
 
@@ -167,6 +188,7 @@ def detecter_video(
         batch_indices.clear()
 
     try:
+        positionner_capture(cap, frame_debut)
         fi = 0
         while fi < total:
             ret, frame = cap.read()

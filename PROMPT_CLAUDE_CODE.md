@@ -6,7 +6,7 @@ Copie le contenu ci-dessous quand tu lances Claude Code a la racine du repo.
 
 Lis d'abord `CLAUDE.md` a la racine. Il contient le contexte complet de la mission, les conventions de code, les modules deja implementes et ceux a finir, et le workflow git attendu.
 
-Lis ensuite `legacy/pipeline_colab.py` en entier. C'est la specification metier.
+Lis ensuite `legacy/pipeline_original.py` en entier. C'est la specification metier.
 
 Lis enfin la structure du projet : `find . -type f -name "*.py" | head -30`.
 
@@ -25,6 +25,6 @@ Une fois mon GO recu :
 - Pas de TODO laisses, pas d'inventions sur les libs
 - Si tu as un doute, demande au lieu d'inventer
 
-Quand tu as besoin de tester sur GPU/Colab, on aura une iteration ou je lance le notebook sur Colab T4 et te remonte les logs/erreurs.
+Quand tu as besoin de tester sur GPU, on aura une iteration ou je lance le notebook en local avec un GPU et te remonte les logs/erreurs.
 
 Demarre maintenant : lectures, verification tests, plan d'attaque.

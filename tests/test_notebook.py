@@ -1,4 +1,4 @@
-"""Tests de validation des notebooks Colab et de leurs builders."""
+"""Tests de validation des notebooks locaux et de leurs builders."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import pytest
 NOTEBOOKS_DIR = Path(__file__).parent.parent / "notebooks"
 SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 
-NOTEBOOK_INFERENCE = NOTEBOOKS_DIR / "colab_pivot_ai.ipynb"
+NOTEBOOK_INFERENCE = NOTEBOOKS_DIR / "pivot_ai.ipynb"
 NOTEBOOK_TRAIN = NOTEBOOKS_DIR / "train_handball_yolo.ipynb"
 
 TOUS_NOTEBOOKS = [NOTEBOOK_INFERENCE, NOTEBOOK_TRAIN]
@@ -41,12 +41,11 @@ def test_notebook_json_valide(notebook: Path) -> None:
 
 
 @pytest.mark.parametrize("notebook", TOUS_NOTEBOOKS, ids=lambda p: p.name)
-def test_notebook_metadata_colab_gpu(notebook: Path) -> None:
-    """Les metadonnees Colab declarent GPU T4."""
-    contenu = json.loads(notebook.read_text(encoding="utf-8"))
-    metadata = contenu["metadata"]
-    assert metadata.get("accelerator") == "GPU"
-    assert metadata.get("colab", {}).get("gpuType") == "T4"
+def test_notebook_utilise_le_noyau_python_local(notebook: Path) -> None:
+    """Les notebooks utilisent un noyau Jupyter Python standard."""
+    metadata = json.loads(notebook.read_text(encoding="utf-8"))["metadata"]
+    assert metadata["kernelspec"]["name"] == "python3"
+    assert metadata["language_info"]["name"] == "python"
 
 
 @pytest.mark.parametrize("notebook", TOUS_NOTEBOOKS, ids=lambda p: p.name)
@@ -93,12 +92,12 @@ def test_notebook_pas_de_token_en_dur(notebook: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_inference_url_repo_remplacee() -> None:
-    """L'URL placeholder est substituee."""
+def test_inference_utilise_les_dossiers_locaux() -> None:
+    """Le notebook retrouve les vidéos, la calibration et les sorties dans le dépôt."""
     contenu = NOTEBOOK_INFERENCE.read_text(encoding="utf-8")
-    assert "REMPLACE_PAR_TON_USERNAME" not in contenu
-    assert "tristan-paloc" in contenu
-    assert "pivot-ai-handball" in contenu
+    assert "raw_clips" in contenu
+    assert "chemin_correspondances_video(CLIP)" in contenu
+    assert "outputs" in contenu
 
 
 def test_inference_appelle_pipeline() -> None:
@@ -106,14 +105,6 @@ def test_inference_appelle_pipeline() -> None:
     contenu = NOTEBOOK_INFERENCE.read_text(encoding="utf-8")
     assert "traiter_match_complet" in contenu
     assert "pivot_ai.pipeline" in contenu
-
-
-def test_inference_clone_anonyme_repo_public() -> None:
-    """Repo public : clone HTTPS anonyme, pas de PAT."""
-    contenu = NOTEBOOK_INFERENCE.read_text(encoding="utf-8")
-    assert "https://github.com/" in contenu
-    assert "GITHUB_TOKEN" not in contenu
-    assert "userdata.get" not in contenu
 
 
 def test_inference_propose_modele_handball() -> None:
@@ -138,7 +129,7 @@ def test_train_utilise_roboflow_et_dataset() -> None:
 
 
 def test_train_entraine_et_exporte() -> None:
-    """Le notebook entraine un YOLO et exporte best.pt vers Drive."""
+    """Le notebook entraîne un YOLO et exporte best.pt dans le dossier models."""
     contenu = NOTEBOOK_TRAIN.read_text(encoding="utf-8")
     assert "model.train" in contenu
     assert "handball_yolov8m.pt" in contenu

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+import math
+from collections.abc import Generator
+from contextlib import closing
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -25,6 +28,7 @@ from pivot_ai.stats import (
     calculer_stats_joueur,
 )
 from pivot_ai.tracking import tracker_detections, tracker_video_botsort
+from pivot_ai.video import positionner_capture
 
 logger = logging.getLogger(__name__)
 
@@ -247,13 +251,13 @@ def couleur_tracker(
     if classe == CLASSES_HANDBALL["players"]:
         eq = equipe_finale.get(tracker_id)
         if eq is None:
-            return COULEUR_ADV
+            return COULEUR_INCONNU
         return COULEUR_MHB if eq == cluster_mhb else COULEUR_ADV
     return COULEUR_INCONNU
 
 
 # ---------------------------------------------------------------------------
-# Generation de la video SBS (broadcast + radar)
+# Génération de la vidéo avec le radar sous la source
 # ---------------------------------------------------------------------------
 
 
@@ -266,10 +270,12 @@ def generer_video_sbs(
     cluster_mhb: int,
     chemin_sortie: str | Path,
     terrain_config: TerrainConfig | None = None,
+    max_frames: int | None = None,
+    frame_debut: int = 0,
 ) -> Path:
-    """Genere une video side-by-side : broadcast annote + radar 2D.
+    """Génère une vidéo avec la source annotée au-dessus du radar 2D.
 
-    Resolution finale : broadcast_w + radar_w (largeur) x broadcast_h (hauteur).
+    Résolution finale : broadcast_w × (broadcast_h + radar_h).
     Encodage mp4v. Les bboxes du broadcast sont annotees avec la couleur d'equipe
     et le tracker_id. Le radar utilise les positions interpolees (rendu fluide).
 
@@ -282,6 +288,8 @@ def generer_video_sbs(
         cluster_mhb: index du cluster MHB
         chemin_sortie: chemin du MP4 de sortie
         terrain_config: config terrain (defaut : TerrainConfig())
+        max_frames: limite du nombre d'images à écrire
+        frame_debut: index de la première image dans la source
 
     Returns:
         Path du fichier genere.
@@ -299,23 +307,21 @@ def generer_video_sbs(
         raise RuntimeError(f"Impossible d'ouvrir la video : {chemin_source}")
 
     fps = float(cap.get(cv2.CAP_PROP_FPS))
-    nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - frame_debut
+    if max_frames is not None:
+        nb_frames = min(nb_frames, max_frames)
     if fps <= 0 or nb_frames <= 0:
         cap.release()
         raise RuntimeError(f"Metadonnees video invalides : fps={fps}, n={nb_frames}")
 
-    # Hauteur commune broadcast + radar (les deux sont a config.broadcast_h/radar_h)
-    if config.broadcast_h != config.radar_h:
+    if config.broadcast_w != config.radar_w:
         cap.release()
-        raise RuntimeError(
-            "broadcast_h doit egaler radar_h pour le hstack SBS "
-            f"(actuel : {config.broadcast_h} vs {config.radar_h})"
-        )
-    largeur_sbs = config.broadcast_w + config.radar_w
-    hauteur_sbs = config.broadcast_h
+        raise RuntimeError("La vidéo et le radar doivent avoir la même largeur")
+    largeur_sortie = config.broadcast_w
+    hauteur_sortie = config.broadcast_h + config.radar_h
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(chemin_sortie), fourcc, fps, (largeur_sbs, hauteur_sbs))
+    writer = cv2.VideoWriter(str(chemin_sortie), fourcc, fps, (largeur_sortie, hauteur_sortie))
     if not writer.isOpened():
         cap.release()
         raise RuntimeError(f"Impossible d'ouvrir VideoWriter : {chemin_sortie}")
@@ -327,18 +333,27 @@ def generer_video_sbs(
             positions_par_frame.setdefault(p.frame_idx, []).append((tid, p.x_m, p.y_m))
 
     try:
+        positionner_capture(cap, frame_debut)
         for fi in range(nb_frames):
             ret, frame = cap.read()
             if not ret:
                 break
-            broadcast = cv2.resize(frame, (config.broadcast_w, config.broadcast_h))
+            h, w = frame.shape[:2]
+            echelle = min(config.broadcast_w / w, config.broadcast_h / h)
+            largeur = max(1, round(w * echelle))
+            hauteur = max(1, round(h * echelle))
+            x = (config.broadcast_w - largeur) // 2
+            y = (config.broadcast_h - hauteur) // 2
+            panneau_video = np.zeros((config.broadcast_h, config.broadcast_w, 3), dtype=np.uint8)
+            broadcast = panneau_video[y:y + hauteur, x:x + largeur]
+            cv2.resize(frame, (largeur, hauteur), dst=broadcast)
 
             # Annoter les boxes (seulement sur les frames echantillonnees)
             if fi in detections_trackees:
                 dets = detections_trackees[fi]
                 if dets.tracker_id is not None and len(dets) > 0:
-                    sx = config.broadcast_w / float(frame.shape[1])
-                    sy = config.broadcast_h / float(frame.shape[0])
+                    sx = largeur / w
+                    sy = hauteur / h
                     for i in range(len(dets)):
                         tid = int(dets.tracker_id[i])
                         couleur = couleur_tracker(
@@ -364,16 +379,14 @@ def generer_video_sbs(
             for tid, x_m, y_m in positions_par_frame.get(fi, []):
                 couleur = couleur_tracker(tid, classe_finale, equipe_finale, cluster_mhb)
                 positions_radar.append((x_m, y_m, couleur, "", tid))
-            radar = dessiner_radar(positions_radar, config)
-
-            sbs = np.hstack([broadcast, radar])
-            writer.write(sbs)
+            radar = dessiner_radar(positions_radar, config, afficher_equipes=bool(equipe_finale))
+            writer.write(np.vstack([panneau_video, radar]))
     finally:
         cap.release()
         writer.release()
 
-    logger.info("Video SBS generee : %s (%dx%d @ %.1f fps)",
-                chemin_sortie, largeur_sbs, hauteur_sbs, fps)
+    logger.info("Vidéo radar générée : %s (%dx%d @ %.1f fps)",
+                chemin_sortie, largeur_sortie, hauteur_sortie, fps)
     return chemin_sortie
 
 
@@ -396,36 +409,25 @@ def _lire_metadonnees_video(chemin: Path) -> tuple[float, int]:
 
 
 def _extraire_frames_indexees(
-    chemin: Path, indices: list[int]
-) -> dict[int, np.ndarray]:
-    """Extrait les frames aux indices donnes en une passe sequentielle.
-
-    Iteration unique avec cap.read() et collecte des frames dont l'index
-    est dans `indices`. Evite les `cap.set(CAP_PROP_POS_FRAMES, ...)`
-    qui forcent un re-decode depuis le keyframe precedent (tres lent
-    sur MP4 H.264).
-    """
+    chemin: Path, indices: list[int], frame_debut: int = 0,
+) -> Generator[tuple[int, np.ndarray], None, None]:
+    """Fournit les images demandées une à une, dans l'ordre de la vidéo."""
+    if not indices:
+        return
     cap = cv2.VideoCapture(str(chemin))
     if not cap.isOpened():
         raise RuntimeError(f"Impossible d'ouvrir la video : {chemin}")
     indices_set = set(int(i) for i in indices)
-    if not indices_set:
-        cap.release()
-        return {}
-    max_idx = max(indices_set)
-    frames: dict[int, np.ndarray] = {}
     try:
-        fi = 0
-        while fi <= max_idx:
+        positionner_capture(cap, frame_debut)
+        for fi in range(max(indices_set) + 1):
             ret, frame = cap.read()
             if not ret:
                 break
             if fi in indices_set:
-                frames[fi] = frame
-            fi += 1
+                yield fi, frame
     finally:
         cap.release()
-    return frames
 
 
 def traiter_match_complet(
@@ -441,6 +443,11 @@ def traiter_match_complet(
     batch_size: int = 8,
     min_frames_track: int = 0,
     tracker: str = "bytetrack",
+    duree: float | None = None,
+    classer_equipes: bool = True,
+    calculer_stats: bool = True,
+    debut: float = 0.0,
+    corriger_fisheye: bool = True,
 ) -> ResultatPipeline:
     """Pipeline complet : video -> stats + clips d'actions + video radar SBS.
 
@@ -462,6 +469,11 @@ def traiter_match_complet(
         tracker: backend de tracking. "bytetrack" (defaut, rapide, mouvement
             seul) ou "botsort" (ReID par apparence : maintient les IDs au
             contact/occlusion, plus lent, necessite un vrai modele YOLO).
+        duree: durée maximale en secondes à partir de debut
+        classer_equipes: active la classification par couleur de maillot
+        calculer_stats: calcule et écrit les statistiques des joueurs
+        debut: position de départ en secondes dans la vidéo source
+        corriger_fisheye: corrige la projection si les repères A à F sont disponibles
 
     Returns:
         ResultatPipeline avec tous les artefacts produits.
@@ -478,7 +490,9 @@ def traiter_match_complet(
     config = terrain_config or TerrainConfig()
 
     # 1. Homographie
-    homographie = calibrer_homographie(correspondances_homographie)
+    homographie = calibrer_homographie(
+        correspondances_homographie, corriger_fisheye=corriger_fisheye,
+    )
     logger.info(
         "Homographie calibree : %d points, methode=%s",
         homographie.nb_points,
@@ -486,12 +500,24 @@ def traiter_match_complet(
     )
 
     # 2. Metadonnees video
-    fps, nb_frames_total = _lire_metadonnees_video(chemin_source)
+    fps, nb_frames_source = _lire_metadonnees_video(chemin_source)
+    if not math.isfinite(debut) or not 0 <= debut < nb_frames_source / fps:
+        raise ValueError("Le début doit être compris dans la vidéo")
+    frame_debut = min(round(debut * fps), nb_frames_source - 1)
+    nb_frames_total = nb_frames_source - frame_debut
+    limite_frames = None
+    if duree is not None:
+        if not math.isfinite(duree) or duree <= 0:
+            raise ValueError("La durée doit être finie et strictement positive")
+        if duree < nb_frames_total / fps:
+            limite_frames = math.ceil(duree * fps)
+            nb_frames_total = limite_frames
     estimation_s = nb_frames_total / max(subsample, 1) / 25.0  # ~25 inf/s sur T4
     logger.info(
-        "Video : %d frames @ %.1f fps. Estimation detection (T4) : ~%.1fs",
+        "Vidéo : %d images à %.1f fps, à partir de l'image %d. Estimation détection (T4) : ~%.1fs",
         nb_frames_total,
         fps,
+        frame_debut,
         estimation_s,
     )
 
@@ -504,11 +530,14 @@ def traiter_match_complet(
     if tracker == "botsort":
         # BoT-SORT + ReID : detection et tracking couples (model.track stateful).
         detections_trackees, classe_finale = tracker_video_botsort(
-            chemin_source, detecteur, subsample=subsample
+            chemin_source, detecteur, subsample=subsample, max_frames=limite_frames,
+            frame_debut=frame_debut,
         )
     elif tracker == "bytetrack":
         detections_par_frame = detecter_video(
-            chemin_source, detecteur, subsample=subsample, batch_size=batch_size
+            chemin_source, detecteur, subsample=subsample,
+            batch_size=batch_size, max_frames=limite_frames,
+            frame_debut=frame_debut,
         )
         detections_trackees, classe_finale = tracker_detections(
             detections_par_frame, fps=fps, subsample=subsample
@@ -519,15 +548,18 @@ def traiter_match_complet(
         )
 
     # 5. Equipes (necessite les frames echantillonnees pour extraire les couleurs)
-    frames_echantillonnees = _extraire_frames_indexees(
-        chemin_source, list(detections_trackees.keys())
-    )
-    equipe_finale, cluster_mhb = classifier_equipes(
-        detections_trackees,
-        frames_echantillonnees,
-        classe_finale,
-        id_classe_joueur=CLASSES_HANDBALL["players"],
-    )
+    equipe_finale, cluster_mhb = {}, 0
+    if classer_equipes:
+        logger.info("Classification des équipes : lecture des couleurs de maillot")
+        with closing(
+            _extraire_frames_indexees(chemin_source, list(detections_trackees), frame_debut)
+        ) as frames:
+            equipe_finale, cluster_mhb = classifier_equipes(
+                detections_trackees,
+                frames,
+                classe_finale,
+                id_classe_joueur=CLASSES_HANDBALL["players"],
+            )
 
     # 6. Projection terrain
     positions_par_tracker = projeter_detections_en_terrain(
@@ -540,7 +572,7 @@ def traiter_match_complet(
     # 6bis. KPI qualite tracking (sur positions AVANT filtre : c'est la que
     # vit la fragmentation / les reprises d'ID)
     nb_trackers_avant_filtre = len(positions_par_tracker)
-    qualite = resumer_qualite_tracking(positions_par_tracker)
+    qualite = resumer_qualite_tracking(positions_par_tracker) if calculer_stats else None
 
     # 6ter. Filtre des fragments courts (traine de tracks ephemeres)
     positions_par_tracker = filtrer_traceurs_courts(
@@ -554,25 +586,27 @@ def traiter_match_complet(
     )
 
     # 8. Stats joueurs (positions reelles uniquement)
-    stats_df = calculer_stats_joueur(positions_par_tracker, fps=fps)
-    chemin_csv = sortie / "stats_joueurs.csv"
-    chemin_parquet = sortie / "stats_joueurs.parquet"
-    stats_df.write_csv(chemin_csv)
-    stats_df.write_parquet(chemin_parquet)
-    logger.info("Stats sauvegardees : %s / %s", chemin_csv, chemin_parquet)
+    stats_df = pl.DataFrame()
+    if calculer_stats:
+        stats_df = calculer_stats_joueur(positions_par_tracker, fps=fps)
+        chemin_csv = sortie / "stats_joueurs.csv"
+        chemin_parquet = sortie / "stats_joueurs.parquet"
+        stats_df.write_csv(chemin_csv)
+        stats_df.write_parquet(chemin_parquet)
+        logger.info("Stats sauvegardees : %s / %s", chemin_csv, chemin_parquet)
 
-    # Largeur bloc defensif pour les 2 equipes (si on a une classification)
-    if equipe_finale:
-        for eq_idx in (0, 1):
-            df_bloc = calculer_largeur_bloc_defensif(
-                positions_par_tracker,
-                equipe_finale,
-                equipe_defendante=eq_idx,
-                fps=fps,
-            )
-            suffixe = "mhb" if eq_idx == cluster_mhb else "adv"
-            chemin_bloc = sortie / f"largeur_bloc_defensif_{suffixe}.csv"
-            df_bloc.write_csv(chemin_bloc)
+        # Largeur bloc defensif pour les 2 equipes (si on a une classification)
+        if equipe_finale:
+            for eq_idx in (0, 1):
+                df_bloc = calculer_largeur_bloc_defensif(
+                    positions_par_tracker,
+                    equipe_finale,
+                    equipe_defendante=eq_idx,
+                    fps=fps,
+                )
+                suffixe = "mhb" if eq_idx == cluster_mhb else "adv"
+                chemin_bloc = sortie / f"largeur_bloc_defensif_{suffixe}.csv"
+                df_bloc.write_csv(chemin_bloc)
 
     # 9. Video radar SBS
     chemin_video_radar: Path | None = None
@@ -587,6 +621,8 @@ def traiter_match_complet(
             cluster_mhb,
             chemin_video_radar,
             terrain_config=config,
+            max_frames=limite_frames,
+            frame_debut=frame_debut,
         )
 
     # 10. Decoupage actions (sur les detections brutes, pas les interpolees)
@@ -601,9 +637,15 @@ def traiter_match_complet(
         )
         if actions:
             try:
-                clips = decouper_clips_video(
-                    chemin_source, actions, sortie / "actions"
-                )
+                actions_source = [
+                    replace(
+                        action,
+                        frame_debut=action.frame_debut + frame_debut,
+                        frame_fin=action.frame_fin + frame_debut,
+                    )
+                    for action in actions
+                ]
+                clips = decouper_clips_video(chemin_source, actions_source, sortie / "actions")
             except FileNotFoundError as exc:
                 logger.warning(
                     "Decoupage clips ignore (ffmpeg manquant) : %s", exc
@@ -612,6 +654,7 @@ def traiter_match_complet(
     metadonnees = {
         "fps": fps,
         "nb_frames_total": nb_frames_total,
+        "frame_debut_source": frame_debut,
         "subsample": subsample,
         "max_gap_interpolation": max_gap,
         "homographie_methode": homographie.methode,
@@ -623,11 +666,14 @@ def traiter_match_complet(
         "min_frames_track": min_frames_track,
         "nb_joueurs_avant_filtre": nb_trackers_avant_filtre,
         "nb_joueurs_stats": len(positions_par_tracker),
-        "nb_reprises_id": qualite.nb_reprises_id,
-        "nb_joueurs_estimes": qualite.nb_joueurs_estimes,
-        "longueur_track_moyenne": round(qualite.longueur_track_moyenne, 1),
         "nb_actions_detectees": len(actions),
     }
+    if qualite is not None:
+        metadonnees.update({
+            "nb_reprises_id": qualite.nb_reprises_id,
+            "nb_joueurs_estimes": qualite.nb_joueurs_estimes,
+            "longueur_track_moyenne": round(qualite.longueur_track_moyenne, 1),
+        })
     logger.info("Pipeline termine. Metadonnees : %s", metadonnees)
 
     return ResultatPipeline(

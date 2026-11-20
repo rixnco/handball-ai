@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 
 import numpy as np
 import supervision as sv
@@ -43,9 +44,9 @@ def extraire_couleur_torse(frame: np.ndarray, bbox: np.ndarray) -> np.ndarray:
         return np.zeros(3, dtype=np.float64)
 
     cx = (x1 + x2) // 2
-    half_w = max(1, int(w * 0.20))
-    y_h = y1 + int(h * 0.15)
-    y_b = y1 + int(h * 0.40)
+    half_w = max(1, int(w * 0.40))
+    y_h = y1 + int(h * 0.25)
+    y_b = y1 + int(h * 0.50)
     crop = frame[y_h:y_b, cx - half_w : cx + half_w]
 
     if crop.size == 0:
@@ -56,7 +57,7 @@ def extraire_couleur_torse(frame: np.ndarray, bbox: np.ndarray) -> np.ndarray:
 
 def classifier_equipes(
     detections_trackees: dict[int, sv.Detections],
-    frames_par_index: dict[int, np.ndarray],
+    frames_par_index: dict[int, np.ndarray] | Iterable[tuple[int, np.ndarray]],
     classe_finale: dict[int, int],
     id_classe_joueur: int,
 ) -> tuple[dict[int, int], int]:
@@ -64,7 +65,7 @@ def classifier_equipes(
 
     Args:
         detections_trackees: dict frame_idx -> Detections (avec tracker_id)
-        frames_par_index: dict frame_idx -> image BGR
+        frames_par_index: images BGR indexées, en dictionnaire ou en flux
         classe_finale: dict tracker_id -> classe stabilisee
         id_classe_joueur: id de la classe "joueur de champ"
 
@@ -76,10 +77,17 @@ def classifier_equipes(
     couleurs_collectees: list[np.ndarray] = []
     tracker_par_couleur: list[int] = []
 
-    for fi, dets in detections_trackees.items():
-        if dets.tracker_id is None or fi not in frames_par_index:
+    if isinstance(frames_par_index, dict):
+        frames = (
+            (fi, frames_par_index[fi]) for fi in detections_trackees if fi in frames_par_index
+        )
+    else:
+        frames = iter(frames_par_index)
+
+    for fi, frame in frames:
+        dets = detections_trackees[fi]
+        if dets.tracker_id is None:
             continue
-        frame = frames_par_index[fi]
         for i in range(len(dets)):
             tid = int(dets.tracker_id[i])
             if classe_finale.get(tid) != id_classe_joueur:

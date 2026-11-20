@@ -2,7 +2,7 @@
 
 ## Mission
 
-Pipeline computer vision pour scouting handball : detection, tracking, stats joueur, decoupage automatique en actions. Le repo a ete pre-scaffole : structure de dossiers, `pyproject.toml`, modules avec signatures et docstrings, tests squelettes. Le code legacy d'origine est dans `legacy/pipeline_colab.py`.
+Pipeline computer vision pour scouting handball : detection, tracking, stats joueur, decoupage automatique en actions. Le repo a ete pre-scaffole : structure de dossiers, `pyproject.toml`, modules avec signatures et docstrings, tests squelettes. Le code legacy d'origine est dans `legacy/pipeline_original.py`.
 
 ## Contexte utilisateur
 
@@ -22,7 +22,7 @@ Tristan : data scientist freelance, code en Python avec conventions strictes :
 
 ## Process
 
-1. Lire `legacy/pipeline_colab.py` en entier AVANT de coder
+1. Lire `legacy/pipeline_original.py` en entier AVANT de coder
 2. Proposer un plan detaille a Tristan en quelques lignes
 3. Attendre son GO
 4. Coder une etape a la fois, commit, passer a la suite
@@ -70,18 +70,14 @@ Identifier les bugs eventuels dans les modules COMPLETS et les corriger.
 - Appeler `traiter_match_complet`
 - Output : message recap avec chemins des artefacts produits
 
-### Etape 6 : Notebook Colab end-to-end (1h)
-- Remplacer URL placeholder du repo dans le notebook
+### Etape 6 : Notebook local end-to-end (1h)
 - Tester sur clip court (3-10s) d'abord
 - Valider sur clip 58s
-- Documenter les pieges Colab dans le README (quota, T4, mount Drive)
 
 ## Contraintes techniques
 
 - Python 3.11+
-- T4 Colab gratuite = 15 Go VRAM. Verifier les batch sizes.
-- Un match 60min @ 25fps = 90k frames. Avec subsample=3, ~1500 inferences/min sur T4.
-  Estimer le temps total et l'afficher avant de lancer.
+- Adapter la taille des lots à la mémoire du GPU.
 - Pas de torch.load arbitraire (verifier les checkpoints, eviter pickle non sigle)
 
 ## Hors scope (Tristan a dit NON)
@@ -95,8 +91,8 @@ Identifier les bugs eventuels dans les modules COMPLETS et les corriger.
 
 ## Critere de fin de mission
 
-Le notebook `notebooks/colab_pivot_ai.ipynb` s'execute end-to-end sur Colab T4 :
-- Entree : clip MP4 dans Drive + correspondances homographie
+Le notebook `notebooks/pivot_ai.ipynb` s'exécute de bout en bout en local :
+- Entree : clip MP4 dans `data/raw_clips/` + correspondances homographie
 - Sortie : DataFrame stats joueurs + clips d'actions decoupes + video radar SBS
 - Pas d'intervention manuelle au-dela de la saisie homographie
 

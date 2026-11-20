@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 # ----------------------------------------------------------------------------
 # Classes du modele de detection handball
@@ -32,19 +33,21 @@ class TerrainConfig:
     largeur_m: float = 20.0
 
     # Rendu radar (pixels)
-    radar_w: int = 960
+    radar_w: int = 1920
     radar_h: int = 540
-    broadcast_w: int = 960
+    broadcast_w: int = 1920
     broadcast_h: int = 540
     px_per_m: int = 22
 
     # Filtre asymetrique (vire bancs/staff sur les bords)
     marge_x_m: float = 0.0
     marge_y_m: float = 2.0
+    profondeur_coin_m: float = 4.0
+    tolerance_coin_m: float = 0.5
 
     @property
     def terrain_px_w(self) -> int:
-        return int(self.longueur_m * self.px_per_m)
+        return round(self.longueur_m * self.px_per_m)
 
     @property
     def terrain_px_h(self) -> int:
@@ -60,23 +63,36 @@ class TerrainConfig:
 
     def m2px(self, x_m: float, y_m: float) -> tuple[int, int]:
         """Convertit des coordonnees terrain (metres) en pixels radar."""
-        x_px = self.origin_x + int(round(x_m * self.px_per_m))
+        x_px = self.origin_x + round(x_m * self.px_per_m)
         y_px = self.origin_y + int(round((self.largeur_m - y_m) * self.px_per_m))
         return x_px, y_px
 
     def est_dans_zone(self, point_m: tuple[float, float]) -> bool:
         """Verifie qu'un point est dans la zone exploitable du terrain."""
         x, y = point_m
-        return (
+        dans_zone = (
             self.marge_x_m <= x <= self.longueur_m - self.marge_x_m
             and self.marge_y_m <= y <= self.largeur_m - self.marge_y_m
         )
+        # Lever la marge intérieure près des coins et absorber les petits
+        # écarts de projection du point d'appui au-delà des lignes.
+        pres_coin = (
+            -self.tolerance_coin_m <= min(x, self.longueur_m - x) <= self.profondeur_coin_m
+            and -self.tolerance_coin_m <= min(y, self.largeur_m - y) <= self.marge_y_m
+        )
+        return dans_zone or pres_coin
 
 
 # ----------------------------------------------------------------------------
 # Points caracteristiques du terrain (pour homographie)
 # ----------------------------------------------------------------------------
 # Voir docs/terrain_handball.png pour le schema visuel
+
+def chemin_correspondances_video(video: str | Path) -> Path:
+    """Retourne le chemin de la calibration à côté de sa vidéo."""
+    chemin = Path(video)
+    return chemin.with_name(f"{chemin.name}.correspondances.json")
+
 
 POINTS_TERRAIN_M: dict[str, tuple[float, float]] = {
     # Coins
@@ -131,6 +147,7 @@ class ModeleConfig:
     # Si True, DetecteurLocal remappe les class_id du modele vers CLASSES_HANDBALL
     # via les noms de classes (model.names). Les classes inconnues sont ecartees.
     remapper_vers_classes_handball: bool = False
+    classes_a_exclure: tuple[str, ...] = ()
 
     @classmethod
     def pour_handball(

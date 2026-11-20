@@ -153,11 +153,11 @@ def test_commande_traiter_homographie_invalide(tmp_path: Path) -> None:
     assert commande_traiter(args) == 1
 
 
-def test_commande_traiter_bout_en_bout_avec_mock(tmp_path: Path) -> None:
+def test_commande_traiter_utilise_calibration_associee(tmp_path: Path) -> None:
     """Pipeline mocke : commande_traiter retourne 0 et appelle traiter_match_complet."""
     source = tmp_path / "vid.mp4"
     generer_video_factice(source, nb_frames=10, fps=25.0, largeur=320, hauteur=240)
-    h = _ecrire_homographie_4pts(tmp_path)
+    _ecrire_homographie_4pts(tmp_path).rename(tmp_path / "vid.mp4.correspondances.json")
     sortie = tmp_path / "out"
 
     resultat_mock = ResultatPipeline(
@@ -175,8 +175,9 @@ def test_commande_traiter_bout_en_bout_avec_mock(tmp_path: Path) -> None:
         "traiter",
         "--video", str(source),
         "--output", str(sortie),
-        "--homographie", str(h),
         "--subsample", "3",
+        "--debut", "00:00:00:12",
+        "--duree", "0.2",
         "--no-video-radar",
         "--no-decoupage",
     ])
@@ -187,8 +188,13 @@ def test_commande_traiter_bout_en_bout_avec_mock(tmp_path: Path) -> None:
         mock_pipe.assert_called_once()
         kwargs = mock_pipe.call_args.kwargs
         assert kwargs["subsample"] == 3
+        assert kwargs["chemin_video"] == source
+        assert kwargs["debut"] == 0.12
+        assert kwargs["duree"] == 0.2
         assert kwargs["generer_video_radar"] is False
         assert kwargs["decouper_actions"] is False
+        assert kwargs["classer_equipes"] is False
+        assert kwargs["calculer_stats"] is False
         assert len(kwargs["correspondances_homographie"]) == 4
 
 
