@@ -246,17 +246,17 @@ class DetecteurStub:
         self.nb_appels_batch = 0  # pour les tests perf
         self.tailles_batch_observees: list[int] = []
 
-    def detecter(self, frame: np.ndarray) -> sv.Detections:
-        return sv.Detections(
-            xyxy=np.array([self.bbox], dtype=np.float32),
-            confidence=np.array([0.9], dtype=np.float32),
-            class_id=np.array([CLASSES_HANDBALL["players"]], dtype=int),
-        )
-
-    def detecter_batch(self, frames: list[np.ndarray]) -> list[sv.Detections]:
+    def detect(self, frames: list[np.ndarray]) -> list[sv.Detections]:
         self.nb_appels_batch += 1
         self.tailles_batch_observees.append(len(frames))
-        return [self.detecter(f) for f in frames]
+        return [
+            sv.Detections(
+                xyxy=np.array([self.bbox], dtype=np.float32),
+                confidence=np.array([0.9], dtype=np.float32),
+                class_id=np.array([CLASSES_HANDBALL["players"]], dtype=int),
+            )
+            for _ in frames
+        ]
 
 
 def test_traiter_match_complet_bout_en_bout(tmp_path: Path) -> None:
@@ -330,8 +330,8 @@ def test_traiter_match_complet_video_inexistante(tmp_path: Path) -> None:
         )
 
 
-def test_traiter_match_complet_utilise_detecter_batch(tmp_path: Path) -> None:
-    """Le pipeline appelle detecter_batch (et non detecter frame-par-frame)."""
+def test_traiter_match_complet_detecte_par_lots(tmp_path: Path) -> None:
+    """Le pipeline appelle detect par lots de batch_size images."""
     source = tmp_path / "match.mp4"
     generer_video_factice(source, nb_frames=40, fps=25.0, largeur=320, hauteur=240)
     correspondances = {

@@ -130,6 +130,7 @@ def test_commande_traiter_video_inexistante(tmp_path: Path) -> None:
         "--video", str(tmp_path / "absent.mp4"),
         "--output", str(tmp_path / "out"),
         "--homographie", str(h),
+        "--modele", str(tmp_path / "modele.pt"),
     ])
     assert commande_traiter(args) == 1
 
@@ -149,6 +150,7 @@ def test_commande_traiter_homographie_invalide(tmp_path: Path) -> None:
         "--video", str(source),
         "--output", str(tmp_path / "out"),
         "--homographie", str(h),
+        "--modele", str(tmp_path / "modele.pt"),
     ])
     assert commande_traiter(args) == 1
 
@@ -180,10 +182,18 @@ def test_commande_traiter_utilise_calibration_associee(tmp_path: Path) -> None:
         "--duree", "0.2",
         "--no-video-radar",
         "--no-decoupage",
+        "--modele", "models/handball.pt",
+        "--exclude", "ball",
     ])
 
-    with patch("pivot_ai.cli.traiter_match_complet", return_value=resultat_mock) as mock_pipe:
+    with (
+        patch("pivot_ai.cli.Detector") as mock_detecteur,
+        patch("pivot_ai.cli.traiter_match_complet", return_value=resultat_mock) as mock_pipe,
+    ):
         code = commande_traiter(args)
+        mock_detecteur.assert_called_once_with(
+            Path("models/handball.pt"), confidence=0.35, exclude=["ball"]
+        )
         assert code == 0
         mock_pipe.assert_called_once()
         kwargs = mock_pipe.call_args.kwargs
@@ -196,6 +206,7 @@ def test_commande_traiter_utilise_calibration_associee(tmp_path: Path) -> None:
         assert kwargs["classer_equipes"] is False
         assert kwargs["calculer_stats"] is False
         assert len(kwargs["correspondances_homographie"]) == 4
+        assert kwargs["detecteur"] is mock_detecteur.return_value
 
 
 def test_commande_traiter_pipeline_leve_exception(tmp_path: Path) -> None:
@@ -210,9 +221,13 @@ def test_commande_traiter_pipeline_leve_exception(tmp_path: Path) -> None:
         "--video", str(source),
         "--output", str(tmp_path / "out"),
         "--homographie", str(h),
+        "--modele", str(tmp_path / "modele.pt"),
     ])
 
-    with patch("pivot_ai.cli.traiter_match_complet", side_effect=RuntimeError("boom")):
+    with (
+        patch("pivot_ai.cli.Detector"),
+        patch("pivot_ai.cli.traiter_match_complet", side_effect=RuntimeError("boom")),
+    ):
         code = commande_traiter(args)
         assert code == 1
 
@@ -237,7 +252,31 @@ def test_parser_flags_par_defaut(tmp_path: Path) -> None:
         "--video", "v.mp4",
         "--output", "o",
         "--homographie", str(h),
+        "--modele", str(tmp_path / "modele.pt"),
     ])
     assert args.no_video_radar is False
     assert args.no_decoupage is False
     assert args.subsample == 2
+
+
+def test_parser_exige_le_modele() -> None:
+    """--modele est obligatoire : argparse quitte avec le code 2."""
+    with pytest.raises(SystemExit) as exc:
+        construire_parser().parse_args(["traiter", "--video", "v.mp4", "--output", "out"])
+    assert exc.value.code == 2
+
+
+def test_commande_traiter_modele_absent(tmp_path: Path) -> None:
+    """Fichier de poids absent : code de sortie 1, pipeline non lance."""
+    source = tmp_path / "vid.mp4"
+    generer_video_factice(source, nb_frames=10, fps=25.0, largeur=320, hauteur=240)
+    args = construire_parser().parse_args([
+        "traiter",
+        "--video", str(source),
+        "--output", str(tmp_path / "out"),
+        "--homographie", str(_ecrire_homographie_4pts(tmp_path)),
+        "--modele", str(tmp_path / "absent.pt"),
+    ])
+    with patch("pivot_ai.cli.traiter_match_complet") as mock_pipe:
+        assert commande_traiter(args) == 1
+    mock_pipe.assert_not_called()

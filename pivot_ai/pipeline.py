@@ -8,16 +8,16 @@ from collections.abc import Generator
 from contextlib import closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import cv2
 import numpy as np
 import polars as pl
 import supervision as sv
 
-from pivot_ai.config import CLASSES_HANDBALL, ModeleConfig, TerrainConfig
+from pivot_ai.config import CLASSES_HANDBALL, TerrainConfig
 from pivot_ai.decoupage import Action, decouper_clips_video, detecter_actions
-from pivot_ai.detection import detecter_video
+from pivot_ai.detection import DetectorLike, detect_video
 from pivot_ai.equipes import classifier_equipes
 from pivot_ai.homographie import Correspondance, Homographie, calibrer_homographie
 from pivot_ai.metriques import resumer_qualite_tracking
@@ -42,14 +42,6 @@ COULEUR_ADV: tuple[int, int, int] = (0, 0, 255)        # rouge
 COULEUR_GK: tuple[int, int, int] = (0, 215, 255)       # jaune-orange
 COULEUR_REF: tuple[int, int, int] = (255, 0, 255)      # magenta
 COULEUR_INCONNU: tuple[int, int, int] = (200, 200, 200)  # gris
-
-
-class _ProtocoleDetecteur(Protocol):
-    """Interface attendue pour un detecteur injectable (DetecteurLocal ou stub)."""
-
-    def detecter(self, frame: np.ndarray) -> sv.Detections: ...
-
-    def detecter_batch(self, frames: list[np.ndarray]) -> list[sv.Detections]: ...
 
 
 @dataclass
@@ -434,11 +426,10 @@ def traiter_match_complet(
     chemin_video: str | Path,
     correspondances_homographie: dict[str, Correspondance],
     dossier_sortie: str | Path,
+    detecteur: DetectorLike,
     subsample: int = 2,
     generer_video_radar: bool = True,
     decouper_actions: bool = True,
-    detecteur: _ProtocoleDetecteur | None = None,
-    modele_config: ModeleConfig | None = None,
     terrain_config: TerrainConfig | None = None,
     batch_size: int = 8,
     min_frames_track: int = 0,
@@ -455,12 +446,10 @@ def traiter_match_complet(
         chemin_video: video source
         correspondances_homographie: points pour calibrer l'homographie
         dossier_sortie: dossier ou ecrire stats, video radar, clips
+        detecteur: detecteur handball (`Detector`, ou stub pour les tests)
         subsample: 1 frame sur N pour la detection (2 par defaut)
         generer_video_radar: si True, genere la video annotee + radar SBS
         decouper_actions: si True, decoupe les actions detectees via ffmpeg
-        detecteur: detecteur injecte (defaut : DetecteurLocal(modele_config)).
-            Permet d'injecter un stub pour les tests.
-        modele_config: config du detecteur si on instancie par defaut
         terrain_config: config terrain (defaut : TerrainConfig())
         batch_size: taille de batch GPU pour la detection
         min_frames_track: filtre les trackers vus sur moins de N frames reelles
@@ -521,11 +510,6 @@ def traiter_match_complet(
         estimation_s,
     )
 
-    # 3. Detection (injectable pour tests)
-    if detecteur is None:
-        from pivot_ai.detection import DetecteurLocal
-        detecteur = DetecteurLocal(modele_config)
-
     # 3-4. Detection + tracking selon le backend choisi
     if tracker == "botsort":
         # BoT-SORT + ReID : detection et tracking couples (model.track stateful).
@@ -534,11 +518,11 @@ def traiter_match_complet(
             frame_debut=frame_debut,
         )
     elif tracker == "bytetrack":
-        detections_par_frame = detecter_video(
+        detections_par_frame = dict(detect_video(
             chemin_source, detecteur, subsample=subsample,
             batch_size=batch_size, max_frames=limite_frames,
-            frame_debut=frame_debut,
-        )
+            start_frame=frame_debut,
+        ))
         detections_trackees, classe_finale = tracker_detections(
             detections_par_frame, fps=fps, subsample=subsample
         )

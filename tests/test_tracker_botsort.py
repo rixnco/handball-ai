@@ -55,7 +55,7 @@ def test_pipeline_route_vers_botsort(tmp_path: Path) -> None:
     faux_retour = ({}, {})  # (detections_trackees, classe_finale) vides
     with (
         patch("pivot_ai.pipeline.tracker_video_botsort", return_value=faux_retour) as mock_bot,
-        patch("pivot_ai.pipeline.detecter_video") as mock_detect,
+        patch("pivot_ai.pipeline.detect_video") as mock_detect,
         patch("pivot_ai.pipeline.tracker_detections") as mock_byte,
     ):
         traiter_match_complet(
