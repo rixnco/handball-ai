@@ -1,5 +1,5 @@
 # BoT-SORT configuration with appearance re-identification (ReID).
-# Ultralytics schema (>= 8.3). Used by track_video_botsort.
+# Ultralytics schema (>= 8.3). Used by track_video(tracker="botsort").
 #
 # ReID computes a visual fingerprint per player: on contact or occlusion,
 # BoT-SORT compares appearances to give the right tracker_id back to the right

@@ -1,8 +1,14 @@
-"""Multi-object tracking with ByteTrack or BoT-SORT, with class stabilization.
+"""Multi-object tracking with the Ultralytics trackers, with class stabilization.
 
-Tracking assigns a stable ID to objects across frames. The class predicted by
-the detector may change from one frame to the next for the same tracker_id;
-it is stabilized by a majority vote over the whole clip.
+Tracking assigns a stable ID to objects across frames. Both backends go
+through `model.track`:
+
+- `bytetrack`: motion only, fast.
+- `botsort`: motion + appearance re-identification (ReID), keeps the IDs on
+  contact and occlusion, slower.
+
+The class predicted by the detector may change from one frame to the next for
+the same tracker_id; it is stabilized by a majority vote over the whole clip.
 """
 
 from __future__ import annotations
@@ -10,23 +16,33 @@ from __future__ import annotations
 import logging
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 import cv2
+import numpy as np
 import supervision as sv
 
 from handball_ai.video import seek_capture
 
-if TYPE_CHECKING:
-    from handball_ai.detection import Detector
-
 logger = logging.getLogger(__name__)
 
-# BoT-SORT + ReID configuration shipped with the package.
-BOTSORT_CONFIG_PATH = Path(__file__).parent / "trackers" / "botsort_reid.yaml"
+TRACKERS_DIR = Path(__file__).parent / "trackers"
+# Tracker configurations shipped with the package (Ultralytics YAML schema).
+TRACKER_CONFIGS: dict[str, Path] = {
+    "bytetrack": TRACKERS_DIR / "bytetrack.yaml",
+    "botsort": TRACKERS_DIR / "botsort_reid.yaml",
+}
 
 
-def _majority_class(tracked_detections: dict[int, sv.Detections]) -> dict[int, int]:
+class TrackingDetector(Protocol):
+    """Interface used by `track_video`, implemented by `Detector` and test stubs."""
+
+    def track(self, frame: np.ndarray, tracker_config: str | Path) -> sv.Detections: ...
+
+    def reset_tracking(self) -> None: ...
+
+
+def majority_class(tracked_detections: dict[int, sv.Detections]) -> dict[int, int]:
     """Return tracker_id -> most frequent class over the clip."""
     observed: dict[int, Counter] = defaultdict(Counter)
     for dets in tracked_detections.values():
@@ -37,96 +53,47 @@ def _majority_class(tracked_detections: dict[int, sv.Detections]) -> dict[int, i
     return {tid: int(counter.most_common(1)[0][0]) for tid, counter in observed.items()}
 
 
-def track_detections(
-    detections_by_frame: dict[int, sv.Detections],
-    fps: float,
-    subsample: int = 1,
-    track_activation_threshold: float = 0.25,
-    lost_track_buffer: int = 30,
-    minimum_matching_threshold: float = 0.8,
-    minimum_consecutive_frames: int = 2,
-) -> tuple[dict[int, sv.Detections], dict[int, int]]:
-    """Apply ByteTrack and stabilize the class per tracker_id.
-
-    The frame rate given to ByteTrack accounts for the subsample: only one
-    frame out of `subsample` is fed, so the motion model must use the
-    effective frame rate `fps / subsample` (otherwise the Kalman prediction
-    is off by a factor `subsample`, which fragments the tracking).
-
-    `minimum_consecutive_frames > 1` removes ghost tracks (isolated detections
-    on 1-2 frames that used to get a short-lived tracker_id).
-
-    Args:
-        detections_by_frame: detector output, frame index -> Detections
-        fps: real frame rate of the clip
-        subsample: 1 frame out of N actually fed to the tracker
-        track_activation_threshold: min confidence to start a track
-        lost_track_buffer: number of (effective) frames a lost track survives,
-            to re-match a player after occlusion without changing its ID
-        minimum_matching_threshold: IoU association threshold
-        minimum_consecutive_frames: consecutive frames required before a
-            track is valid (>= 2 removes 1-frame ghosts)
-
-    Returns:
-        (tracked_detections, final_class)
-        - tracked_detections: frame index -> Detections with tracker_id
-        - final_class: tracker_id -> stabilized class (majority vote)
-    """
-    effective_frame_rate = max(1, int(round(fps / max(1, subsample))))
-    tracker = sv.ByteTrack(
-        frame_rate=effective_frame_rate,
-        track_activation_threshold=track_activation_threshold,
-        lost_track_buffer=lost_track_buffer,
-        minimum_matching_threshold=minimum_matching_threshold,
-        minimum_consecutive_frames=minimum_consecutive_frames,
-    )
-    tracked_detections = {
-        fi: tracker.update_with_detections(detections_by_frame[fi])
-        for fi in sorted(detections_by_frame)
-    }
-    final_class = _majority_class(tracked_detections)
-
-    logger.info(
-        "Tracking done: %d stable trackers over %d frames",
-        len(final_class),
-        len(tracked_detections),
-    )
-    return tracked_detections, final_class
-
-
-def track_video_botsort(
+def track_video(
     video_path: str | Path,
-    detector: Detector,
+    detector: TrackingDetector,
+    *,
+    tracker: str = "bytetrack",
     subsample: int = 1,
-    config_path: str | Path | None = None,
-    max_frames: int | None = None,
     start_frame: int = 0,
+    max_frames: int | None = None,
 ) -> tuple[dict[int, sv.Detections], dict[int, int]]:
-    """Detect AND track with BoT-SORT + ReID (Ultralytics `model.track`).
+    """Detect and track the objects of a video, then stabilize their class.
 
-    Unlike ByteTrack (motion only), BoT-SORT computes an appearance fingerprint
-    per player and re-identifies it after occlusion, which strongly reduces ID
-    jumps on contact. Detection and tracking are coupled in `model.track`
-    (stateful, persist=True), so this function replaces both detect_video and
-    track_detections.
-
-    Classes are converted to HANDBALL_CLASSES by the detector.
+    The tracker state is reset before the first frame, so that IDs never
+    carry over from a previous video. Only one frame out of `subsample` is fed
+    to the tracker; `track_buffer` in the tracker YAML counts those frames.
 
     Args:
         video_path: video file
-        detector: handball Detector
+        detector: object exposing `track` and `reset_tracking`
+        tracker: "bytetrack" or "botsort"
         subsample: 1 frame out of N fed to the tracker
-        config_path: BoT-SORT yaml (default: shipped ReID configuration)
-        max_frames: maximum number of frames read from start_frame
         start_frame: first frame index in the source
+        max_frames: maximum number of frames read from start_frame
 
     Returns:
-        (tracked_detections, final_class), same format as track_detections.
+        (tracked_detections, final_class)
+        - tracked_detections: frame index relative to start_frame -> Detections
+          with tracker_id, for the sampled frames
+        - final_class: tracker_id -> stabilized class (majority vote)
 
     Raises:
+        ValueError: unknown tracker or invalid subsample
         RuntimeError: the video cannot be opened
     """
-    config = str(config_path or BOTSORT_CONFIG_PATH)
+    if tracker not in TRACKER_CONFIGS:
+        raise ValueError(
+            f"Unknown tracker: {tracker!r} (expected one of {', '.join(TRACKER_CONFIGS)})"
+        )
+    if subsample < 1:
+        raise ValueError(f"subsample must be >= 1, got {subsample}")
+    config = TRACKER_CONFIGS[tracker]
+
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
@@ -135,21 +102,24 @@ def track_video_botsort(
         total = min(total, max_frames)
 
     tracked_detections: dict[int, sv.Detections] = {}
+    detector.reset_tracking()
     try:
         seek_capture(cap, start_frame)
-        for fi in range(total):
+        for index in range(total):
             ok, frame = cap.read()
             if not ok:
                 break
-            if fi % subsample == 0:
-                tracked_detections[fi] = detector.track(frame, config)
+            if index % subsample == 0:
+                tracked_detections[index] = detector.track(frame, config)
     finally:
         cap.release()
 
-    final_class = _majority_class(tracked_detections)
+    final_class = majority_class(tracked_detections)
     logger.info(
-        "BoT-SORT tracking done: %d trackers over %d analysed frames (ReID)",
+        "Tracking done (%s): %d trackers over %d analysed frames (subsample=%d)",
+        tracker,
         len(final_class),
         len(tracked_detections),
+        subsample,
     )
     return tracked_detections, final_class

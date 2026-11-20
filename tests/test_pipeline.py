@@ -26,6 +26,7 @@ from handball_ai.pipeline import (
     tracker_color,
 )
 from handball_ai.stats import PlayerPosition
+from handball_ai.tracking import TRACKER_CONFIGS
 from tests.conftest import make_fake_video
 
 # Identity-like homography: pixels = metres (handy for tests)
@@ -224,25 +225,26 @@ def test_generate_radar_video_dimensions(tmp_path: Path) -> None:
 
 
 class StubDetector:
-    """Stub detector: returns a fixed player bbox on every frame.
+    """Stub tracking detector: returns the same tracked player bbox on every frame.
 
     Tests the full pipeline without YOLO or GPU.
     """
 
     def __init__(self, bbox: tuple[float, float, float, float] = (140, 80, 180, 200)) -> None:
         self.bbox = bbox
-        self.batch_sizes: list[int] = []
+        self.tracker_configs: list[Path] = []
 
-    def detect(self, frames: list[np.ndarray]) -> list[sv.Detections]:
-        self.batch_sizes.append(len(frames))
-        return [
-            sv.Detections(
-                xyxy=np.array([self.bbox], dtype=np.float32),
-                confidence=np.array([0.9], dtype=np.float32),
-                class_id=np.array([HANDBALL_CLASSES["players"]], dtype=int),
-            )
-            for _ in frames
-        ]
+    def reset_tracking(self) -> None:
+        self.tracker_configs.clear()
+
+    def track(self, frame: np.ndarray, tracker_config: str | Path) -> sv.Detections:
+        self.tracker_configs.append(Path(tracker_config))
+        return sv.Detections(
+            xyxy=np.array([self.bbox], dtype=np.float32),
+            confidence=np.array([0.9], dtype=np.float32),
+            class_id=np.array([HANDBALL_CLASSES["players"]], dtype=int),
+            tracker_id=np.array([1], dtype=int),
+        )
 
 
 def test_process_match_end_to_end(tmp_path: Path) -> None:
@@ -300,12 +302,13 @@ def test_process_match_missing_video(tmp_path: Path) -> None:
         )
 
 
-def test_process_match_detects_in_batches(tmp_path: Path) -> None:
-    """The pipeline calls detect with batches of batch_size frames."""
+@pytest.mark.parametrize("tracker", ["bytetrack", "botsort"])
+def test_process_match_tracks_with_the_chosen_backend(tmp_path: Path, tracker: str) -> None:
+    """The tracker name selects the configuration given to the detector."""
     source = tmp_path / "match.mp4"
-    make_fake_video(source, nb_frames=40, fps=25.0, width=320, height=240)
+    make_fake_video(source, nb_frames=20, fps=25.0, width=320, height=240)
     stub = StubDetector()
-    process_match(
+    res = process_match(
         video_path=source,
         court_mapping=_VIDEO_MAPPING,
         output_dir=tmp_path / "out",
@@ -313,7 +316,22 @@ def test_process_match_detects_in_batches(tmp_path: Path) -> None:
         subsample=2,
         with_radar_video=False,
         with_clips=False,
-        batch_size=8,
+        tracker=tracker,
     )
-    # 40 frames / subsample 2 = 20 sampled frames -> batches of 8 + 8 + 4.
-    assert stub.batch_sizes == [8, 8, 4]
+    assert set(stub.tracker_configs) == {TRACKER_CONFIGS[tracker]}
+    assert len(stub.tracker_configs) == 10
+    assert res.metadata["tracker"] == tracker
+
+
+def test_process_match_unknown_tracker_raises(tmp_path: Path) -> None:
+    """An unknown backend raises ValueError."""
+    source = tmp_path / "match.mp4"
+    make_fake_video(source, nb_frames=10, fps=25.0, width=320, height=240)
+    with pytest.raises(ValueError, match="Unknown tracker"):
+        process_match(
+            video_path=source,
+            court_mapping=_VIDEO_MAPPING,
+            output_dir=tmp_path / "out",
+            detector=StubDetector(),
+            tracker="deepsort",
+        )
