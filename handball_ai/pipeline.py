@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -239,6 +239,55 @@ def tracker_color(
 
 
 # ---------------------------------------------------------------------------
+# Box drawing, shared by the annotated videos
+# ---------------------------------------------------------------------------
+
+
+def track_id_color(tracker_id: int) -> tuple[int, int, int]:
+    """Return a BGR colour per tracker_id, so that ID switches are visible."""
+    return sv.ColorPalette.DEFAULT.by_idx(tracker_id).as_bgr()
+
+
+def draw_tracked_boxes(
+    image: np.ndarray,
+    detections: sv.Detections,
+    color_of: Callable[[int], tuple[int, int, int]],
+    scale: tuple[float, float] = (1.0, 1.0),
+    thickness: int = 2,
+    font_scale: float = 0.5,
+) -> None:
+    """Draw the boxes and tracker_ids of tracked detections, in place.
+
+    Args:
+        image: BGR image to draw on
+        detections: detections with tracker_id (untracked ones are skipped)
+        color_of: tracker_id -> BGR colour
+        scale: (sx, sy) factors from the detection coordinates to the image
+        thickness: box line thickness in pixels
+        font_scale: OpenCV font scale of the tracker_id label
+    """
+    if detections.tracker_id is None:
+        return
+    sx, sy = scale
+    for xyxy, tid in zip(detections.xyxy, detections.tracker_id, strict=True):
+        color = color_of(int(tid))
+        x1, y1, x2, y2 = xyxy
+        p1 = (int(x1 * sx), int(y1 * sy))
+        p2 = (int(x2 * sx), int(y2 * sy))
+        cv2.rectangle(image, p1, p2, color, thickness)
+        cv2.putText(
+            image,
+            str(int(tid)),
+            (p1[0], max(0, p1[1] - 5)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            color,
+            max(1, thickness // 2),
+            cv2.LINE_AA,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Video with the radar below the source
 # ---------------------------------------------------------------------------
 
@@ -332,26 +381,13 @@ def generate_radar_video(
 
             # Annotate the boxes (sampled frames only)
             dets = tracked_detections.get(fi)
-            if dets is not None and dets.tracker_id is not None:
-                sx = width / w
-                sy = height / h
-                for i in range(len(dets)):
-                    tid = int(dets.tracker_id[i])
-                    color = tracker_color(tid, final_class, final_team, home_cluster)
-                    x1, y1, x2, y2 = dets.xyxy[i]
-                    p1 = (int(x1 * sx), int(y1 * sy))
-                    p2 = (int(x2 * sx), int(y2 * sy))
-                    cv2.rectangle(broadcast, p1, p2, color, 2)
-                    cv2.putText(
-                        broadcast,
-                        str(tid),
-                        (p1[0], max(0, p1[1] - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        color,
-                        1,
-                        cv2.LINE_AA,
-                    )
+            if dets is not None:
+                draw_tracked_boxes(
+                    broadcast,
+                    dets,
+                    lambda tid: tracker_color(tid, final_class, final_team, home_cluster),
+                    scale=(width / w, height / h),
+                )
 
             # Radar: positions of the current frame (interpolated included)
             radar_positions = [
@@ -384,6 +420,38 @@ def _read_video_metadata(path: Path) -> tuple[float, int]:
     if fps <= 0 or nb <= 0:
         raise RuntimeError(f"Invalid video metadata: fps={fps}, n={nb}")
     return fps, nb
+
+
+def frame_window(
+    fps: float, nb_source_frames: int, start: float, duration: float | None
+) -> tuple[int, int | None, int]:
+    """Convert a start and a duration in seconds into source frames.
+
+    Args:
+        fps: frame rate of the video
+        nb_source_frames: number of frames of the video
+        start: start position in seconds
+        duration: maximum duration in seconds from start, None for the end
+
+    Returns:
+        (start_frame, frame_limit, nb_frames): first frame, maximum number of
+        frames to read (None up to the end) and number of frames covered.
+
+    Raises:
+        ValueError: start outside the video, or non positive duration
+    """
+    if not math.isfinite(start) or not 0 <= start < nb_source_frames / fps:
+        raise ValueError("The start must be inside the video")
+    start_frame = min(round(start * fps), nb_source_frames - 1)
+    nb_frames = nb_source_frames - start_frame
+    frame_limit = None
+    if duration is not None:
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("The duration must be finite and strictly positive")
+        if duration < nb_frames / fps:
+            frame_limit = math.ceil(duration * fps)
+            nb_frames = frame_limit
+    return start_frame, frame_limit, nb_frames
 
 
 def _read_indexed_frames(
@@ -471,17 +539,9 @@ def process_match(
 
     # 2. Video metadata
     fps, nb_source_frames = _read_video_metadata(source)
-    if not math.isfinite(start) or not 0 <= start < nb_source_frames / fps:
-        raise ValueError("The start must be inside the video")
-    start_frame = min(round(start * fps), nb_source_frames - 1)
-    nb_frames_total = nb_source_frames - start_frame
-    frame_limit = None
-    if duration is not None:
-        if not math.isfinite(duration) or duration <= 0:
-            raise ValueError("The duration must be finite and strictly positive")
-        if duration < nb_frames_total / fps:
-            frame_limit = math.ceil(duration * fps)
-            nb_frames_total = frame_limit
+    start_frame, frame_limit, nb_frames_total = frame_window(
+        fps, nb_source_frames, start, duration
+    )
     logger.info(
         "Video: %d frames at %.1f fps, from frame %d", nb_frames_total, fps, start_frame
     )
