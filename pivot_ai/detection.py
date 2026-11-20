@@ -156,7 +156,7 @@ def detecter_video(
         detecteur: instance avec une methode `detecter_batch(list[ndarray])`
         subsample: 1 frame sur N
         max_frames: nombre maximal d'images depuis frame_debut
-        batch_size: taille de batch GPU (8 = bon defaut T4 / YOLOv8m / 640px)
+        batch_size: taille de batch GPU (8 = bon defaut YOLO26m / 640px)
         frame_debut: index de la première image dans la source
 
     Returns:

@@ -253,7 +253,7 @@ def construire_parser() -> argparse.ArgumentParser:
     p_traiter.add_argument(
         "--modele",
         type=Path,
-        help="Fichier de poids YOLO entraîné sur le handball (par défaut : YOLOv8m COCO)",
+        help="Fichier de poids YOLO entraîné sur le handball (par défaut : YOLO26m COCO)",
     )
     p_traiter.add_argument(
         "--exclude",

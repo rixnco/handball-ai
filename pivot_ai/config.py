@@ -138,7 +138,7 @@ class ModeleConfig:
       rend le pipeline robuste a l'ordre des classes du dataset d'entrainement.
     """
 
-    chemin_modele: str = "yolov8m.pt"
+    chemin_modele: str = "yolo26m.pt"
     confiance_min: float = 0.35
     iou_min: float = 0.5
     # None = garder toutes les classes detectees par le modele.
