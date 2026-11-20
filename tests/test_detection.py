@@ -13,6 +13,7 @@ from ultralytics.engine.results import Results
 
 from handball_ai.config import HANDBALL_CLASSES
 from handball_ai.detection import (
+    DEFAULT_TRACKING_CONFIDENCE,
     Detector,
     build_class_map,
     detect_video,
@@ -32,6 +33,7 @@ class FakeYOLO:
         self.path = path
         self.names = ROBOFLOW_NAMES
         self.calls: list[dict[str, Any]] = []
+        self.predictor: object | None = None
 
     def predict(self, frames: list[np.ndarray], **options: Any) -> list[Results]:
         self.calls.append(options)
@@ -39,6 +41,15 @@ class FakeYOLO:
             [[10, 10, 20, 20, 0.9, cid] for cid in self.names], dtype=torch.float32
         )
         return [Results(frame, path="", names=self.names, boxes=boxes) for frame in frames]
+
+    def track(self, frame: np.ndarray, **options: Any) -> list[Results]:
+        self.calls.append(options)
+        self.predictor = object()  # Ultralytics keeps the trackers on the predictor
+        # Columns: x1, y1, x2, y2, track id, confidence, class
+        boxes = torch.tensor(
+            [[10, 10, 20, 20, 40 + cid, 0.9, cid] for cid in self.names], dtype=torch.float32
+        )
+        return [Results(frame, path="", names=self.names, boxes=boxes)]
 
 
 @pytest.fixture
@@ -133,6 +144,8 @@ def test_detector_invalid_confidence(weights: Path) -> None:
     """Confidence outside [0, 1]: ValueError."""
     with pytest.raises(ValueError, match="Confidence"):
         Detector(weights, confidence=1.5)
+    with pytest.raises(ValueError, match="Tracking confidence"):
+        Detector(weights, tracking_confidence=-0.1)
 
 
 def test_detector_detect(weights: Path) -> None:
@@ -148,6 +161,32 @@ def test_detector_detect(weights: Path) -> None:
     options = detector.model.calls[0]
     assert options["conf"] == 0.5
     assert options["classes"] == [1, 2, 3]
+
+
+def test_detector_track(weights: Path) -> None:
+    """track keeps the track ids, converts the classes and uses the tracking confidence."""
+    detector = Detector(weights, confidence=0.5, exclude=["ball"])
+    frame = np.zeros((32, 32, 3), dtype=np.uint8)
+
+    tracked = detector.track(frame, "tracker.yaml")
+
+    assert sorted(tracked.tracker_id.tolist()) == [41, 42, 43]
+    by_id = dict(zip(tracked.tracker_id.tolist(), tracked.class_id.tolist(), strict=True))
+    assert by_id[42] == HANDBALL_CLASSES["players"]
+    options = detector.model.calls[0]
+    assert options["conf"] == DEFAULT_TRACKING_CONFIDENCE
+    assert options["persist"] is True
+    assert options["tracker"] == "tracker.yaml"
+    assert options["classes"] == [1, 2, 3]
+
+
+def test_detector_reset_tracking(weights: Path) -> None:
+    """reset_tracking drops the predictor, which holds the tracker state."""
+    detector = Detector(weights)
+    detector.track(np.zeros((32, 32, 3), dtype=np.uint8), "tracker.yaml")
+    assert detector.model.predictor is not None
+    detector.reset_tracking()
+    assert detector.model.predictor is None
 
 
 # ---------------------------------------------------------------------------
