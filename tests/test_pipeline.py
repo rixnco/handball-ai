@@ -192,9 +192,9 @@ def test_couleur_tracker_par_role() -> None:
 
 
 def test_generer_video_sbs_cree_fichier_avec_dimensions(tmp_path: Path) -> None:
-    """La video SBS est ecrite avec largeur = broadcast_w + radar_w."""
+    """La source et le radar 32:9 sont empilés dans une vidéo 1080p."""
     source = tmp_path / "source.mp4"
-    generer_video_factice(source, nb_frames=10, fps=25.0, largeur=320, hauteur=240)
+    generer_video_factice(source, nb_frames=10, fps=25.0, largeur=640, hauteur=180)
 
     classe_finale = {1: CLASSES_HANDBALL["players"]}
     detections_trackees = {
@@ -225,8 +225,8 @@ def test_generer_video_sbs_cree_fichier_avec_dimensions(tmp_path: Path) -> None:
     hauteur = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     nb = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
-    assert largeur == config.broadcast_w + config.radar_w
-    assert hauteur == config.broadcast_h
+    assert largeur == config.broadcast_w == config.radar_w == 1920
+    assert hauteur == config.broadcast_h + config.radar_h == 1080
     assert nb >= 1
 
 

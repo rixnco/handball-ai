@@ -50,6 +50,8 @@ htmlcov/
 data/raw_clips/*
 data/outputs/*
 data/cache/*
+data/datasets/*/
+data/training/
 !data/raw_clips/.gitkeep
 !data/outputs/.gitkeep
 !data/cache/.gitkeep
@@ -79,3 +81,7 @@ logs/
 
 # Notebooks - on garde la structure mais pas les outputs lourds
 notebooks/*-output.ipynb
+
+# Sorties d'entraînement Ultralytics et images d'annotation
+notebooks/runs/
+data/annotation/

@@ -1,4 +1,4 @@
-"""Genere le notebook Colab pivot-ai-handball a partir de cellules definies en Python.
+"""Genere le notebook local pivot-ai-handball a partir de cellules definies en Python.
 
 Permet de tenir le contenu en code Python lisible plutot que de hand-editer le JSON
 .ipynb. Idempotent : peut etre relance.
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-NOTEBOOK_PATH = Path(__file__).parent.parent / "notebooks" / "colab_pivot_ai.ipynb"
+NOTEBOOK_PATH = Path(__file__).parent.parent / "notebooks" / "pivot_ai.ipynb"
 
 
 def md(source: str) -> dict:
@@ -36,61 +36,36 @@ def code(source: str) -> dict:
 
 CELLULES = [
     md(
-        "# pivot-ai-handball — Notebook Colab\n"
+        "# pivot-ai-handball\n"
         "\n"
-        "Notebook \"thin\" : clone le repo, installe les deps, monte Drive et appelle le module Python.\n"
-        "Aucune logique metier ici. Tout est dans `pivot_ai/`.\n"
-        "\n"
-        "**Prerequis :** runtime GPU (Edition > Parametres du notebook > Accelerateur materiel = T4 GPU).\n"
-        "\n"
-        "### Lancement rapide\n"
-        "\n"
-        "1. **Execution > Tout executer**\n"
-        "2. Quand la cellule *Monter Google Drive* le demande, **clique pour autoriser** "
-        "(c'est le SEUL geste manuel).\n"
-        "3. Laisse tourner : detection, tracking, stats, video radar et decoupage s'enchainent.\n"
-        "\n"
-        "La calibration homographie est persistee sur Drive (`correspondances.json`) : tu ne "
-        "l'edites qu'une fois."
+        "Ouvre ce notebook dans le dépôt avec le noyau Python du projet. Dépose ta vidéo dans `data/raw_clips/`, puis indique son nom dans la cellule de configuration. Le notebook cherche la calibration à côté de la vidéo. Les résultats sont écrits dans `data/outputs/`."
     ),
-    md("## 1. Clone repo + install"),
+    md(
+        "## 1. Configurer le match"
+    ),
     code(
-        "import os, subprocess, sys\n"
-        "\n"
-        "REPO_OWNER = \"tristan-paloc\"\n"
-        "REPO_NAME  = \"pivot-ai-handball\"\n"
-        "BRANCH     = \"main\"\n"
-        "REPO_DIR   = f\"/content/{REPO_NAME}\"\n"
-        "REPO_URL   = f\"https://github.com/{REPO_OWNER}/{REPO_NAME}.git\"\n"
-        "\n"
-        "# Repo public : clone anonyme. Si tu repasses le repo en prive,\n"
-        "# voir la note 'Authentification GitHub' dans le README.\n"
-        "if not os.path.exists(REPO_DIR):\n"
-        "    res = subprocess.run(\n"
-        "        [\"git\", \"clone\", \"--branch\", BRANCH, \"--depth\", \"1\", REPO_URL, REPO_DIR],\n"
-        "        capture_output=True, text=True,\n"
-        "    )\n"
-        "    if res.returncode != 0:\n"
-        "        raise RuntimeError(f\"Echec git clone :\\n{res.stderr}\")\n"
-        "    print(f\"Repo clone dans {REPO_DIR}\")\n"
-        "else:\n"
-        "    res = subprocess.run(\n"
-        "        [\"git\", \"-C\", REPO_DIR, \"pull\"], capture_output=True, text=True\n"
-        "    )\n"
-        "    if res.returncode != 0:\n"
-        "        raise RuntimeError(f\"Echec git pull :\\n{res.stderr}\")\n"
-        "    print(f\"Repo a jour dans {REPO_DIR}\")\n"
-        "\n"
-        "%cd {REPO_DIR}\n"
-        "# Install runtime seulement (pas [dev] : jupyter/pytest/ruff sont inutiles sur\n"
-        "# Colab et provoquent des conflits de versions bruyants).\n"
-        "!pip install -q -e .\n"
-        "\n"
-        "if REPO_DIR not in sys.path:\n"
-        "    sys.path.insert(0, REPO_DIR)\n"
+        "import os\n"
+        "from pathlib import Path\n"
         "\n"
         "import pivot_ai\n"
-        "print(f\"pivot_ai version : {pivot_ai.__version__}\")"
+        "from pivot_ai.config import chemin_correspondances_video\n"
+        "\n"
+        "courant = Path.cwd().resolve()\n"
+        "racine = next(\n"
+        "    (p for p in (courant, *courant.parents) if (p / \"scripts\" / \"build_notebook.py\").is_file()),\n"
+        "    None,\n"
+        ")\n"
+        "if racine is None:\n"
+        "    raise RuntimeError(\"Ouvre le notebook depuis le dépôt pivot-ai-handball.\")\n"
+        "\n"
+        "CLIPS_DIR = racine / \"data\" / \"raw_clips\"\n"
+        "CLIP = str(CLIPS_DIR / \"mon_clip.mp4\")\n"
+        "CHEMIN_CORRESPONDANCES = chemin_correspondances_video(CLIP)\n"
+        "OUTPUTS_DIR = racine / \"data\" / \"outputs\"\n"
+        "OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)\n"
+        "\n"
+        "print(f\"pivot_ai version : {pivot_ai.__version__}\")\n"
+        "print(\"Clips disponibles :\", [p.name for p in sorted(CLIPS_DIR.glob(\"*.mp4\"))])"
     ),
     md("## 2. Verifier GPU"),
     code(
@@ -100,20 +75,8 @@ CELLULES = [
         "    print(f\"GPU : {torch.cuda.get_device_name(0)}\")\n"
         "    print(f\"VRAM : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} Go\")"
     ),
-    md("## 3. Monter Google Drive"),
-    code(
-        "from google.colab import drive\n"
-        "drive.mount('/content/drive', force_remount=False)\n"
-        "\n"
-        "DRIVE_ROOT  = \"/content/drive/MyDrive/PIVOT_AI\"\n"
-        "CLIPS_DIR   = f\"{DRIVE_ROOT}/raw_clips\"\n"
-        "OUTPUTS_DIR = f\"{DRIVE_ROOT}/outputs\"\n"
-        "os.makedirs(OUTPUTS_DIR, exist_ok=True)\n"
-        "\n"
-        "!ls {CLIPS_DIR}"
-    ),
     md(
-        "## 4. Choisir un clip et relever les points d'homographie\n"
+        "## 3. Choisir un clip et relever les points d'homographie\n"
         "\n"
         "Affiche une frame du clip. **Survole avec la souris** pour relever les pixels des points caracteristiques du terrain.\n"
         "\n"
@@ -142,7 +105,8 @@ CELLULES = [
         "import cv2\n"
         "import plotly.express as px\n"
         "\n"
-        "CLIP = f\"{CLIPS_DIR}/attaque_mhb_stable_58s.mp4\"\n"
+        "if not Path(CLIP).is_file():\n"
+        "    raise FileNotFoundError(f\"Indique le nom de ton clip dans la cellule de configuration : {CLIP}\")\n"
         "\n"
         "cap = cv2.VideoCapture(CLIP)\n"
         "total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))\n"
@@ -151,6 +115,8 @@ CELLULES = [
         "cap.set(cv2.CAP_PROP_POS_FRAMES, FRAME_REF)\n"
         "ret, frame_ref = cap.read()\n"
         "cap.release()\n"
+        "if not ret or fps <= 0:\n"
+        "    raise RuntimeError(f\"Impossible de lire le clip : {CLIP}\")\n"
         "\n"
         "print(f\"Clip : {total} frames @ {fps:.1f} fps ({total/fps:.1f}s)\")\n"
         "\n"
@@ -162,45 +128,33 @@ CELLULES = [
     code(
         "import json\n"
         "\n"
-        "# Les correspondances sont persistees sur Drive : edite le fichier une fois\n"
-        "# (ajoute des points cote GAUCHE pour couvrir tout le terrain) et elles\n"
-        "# survivent a toutes les sessions suivantes.\n"
-        "CHEMIN_CORRESPONDANCES = f\"{DRIVE_ROOT}/correspondances.json\"\n"
+        "if not CHEMIN_CORRESPONDANCES.is_file():\n"
+        "    raise FileNotFoundError(\n"
+        "        f\"Crée {CHEMIN_CORRESPONDANCES} avec les points relevés sur ce clip. \"\n"
+        "        \"Utilise python -m scripts.calibrer_terrain avec le chemin du clip depuis la racine du dépôt.\"\n"
+        "    )\n"
         "\n"
-        "correspondances_defaut = {\n"
-        "    \"C\": {\"pixel\": [879, 319],  \"terrain_m\": [40, 20]},\n"
-        "    \"J\": {\"pixel\": [974, 355],  \"terrain_m\": [40, 16]},\n"
-        "    \"N\": {\"pixel\": [1250, 454], \"terrain_m\": [40, 11.5]},\n"
-        "    \"M\": {\"pixel\": [1426, 524], \"terrain_m\": [40, 8.5]},\n"
-        "    \"I\": {\"pixel\": [1889, 694], \"terrain_m\": [40, 4]},\n"
-        "    \"L\": {\"pixel\": [837, 571],  \"terrain_m\": [34, 10]},\n"
-        "    \"O\": {\"pixel\": [584, 641],  \"terrain_m\": [31, 10]},\n"
-        "}\n"
-        "\n"
-        "if os.path.exists(CHEMIN_CORRESPONDANCES):\n"
-        "    with open(CHEMIN_CORRESPONDANCES) as f:\n"
-        "        correspondances = json.load(f)\n"
-        "    print(f\"Correspondances chargees depuis Drive : {len(correspondances)} points\")\n"
-        "else:\n"
-        "    correspondances = correspondances_defaut\n"
-        "    with open(CHEMIN_CORRESPONDANCES, \"w\") as f:\n"
-        "        json.dump(correspondances, f, indent=2)\n"
-        "    print(f\"Correspondances par defaut ecrites sur Drive : {CHEMIN_CORRESPONDANCES}\")\n"
-        "    print(\"Edite ce fichier (ajoute des points cote gauche) pour une meilleure calibration.\")"
+        "correspondances = json.loads(CHEMIN_CORRESPONDANCES.read_text(encoding=\"utf-8\"))\n"
+        "print(f\"Calibration chargée : {len(correspondances)} points\")"
     ),
     md(
-        "## 5. Modele de detection\n"
+        "## 4. Modele de detection\n"
         "\n"
         "Par defaut le pipeline utilise **YOLOv8m COCO** (detecte des 'person' generiques,\n"
         "tracking fragmente). Si tu as entraine un modele handball via\n"
         "`notebooks/train_handball_yolo.ipynb`, pointe dessus : il distingue\n"
-        "joueurs / gardiens / arbitres / ballon et reduit fortement la fragmentation."
+        "joueurs / gardiens / arbitres / ballon et reduit fortement la fragmentation.\n"
+        "Si le poids panorama existe dans `models/`, il est sélectionné en priorité ; modifie\n"
+        "`CHEMIN_MODELE_HANDBALL` pour choisir un autre fichier."
     ),
     code(
         "import os\n"
         "from pivot_ai.config import ModeleConfig\n"
         "\n"
-        "CHEMIN_MODELE_HANDBALL = \"/content/drive/MyDrive/PIVOT_AI/models/handball_yolov8m.pt\"\n"
+        "DOSSIER_MODELES = racine / \"models\"\n"
+        "poids_panorama = DOSSIER_MODELES / \"handball_yolov8m_panorama.pt\"\n"
+        "poids_standard = DOSSIER_MODELES / \"handball_yolov8m.pt\"\n"
+        "CHEMIN_MODELE_HANDBALL = str(poids_panorama if poids_panorama.is_file() else poids_standard)\n"
         "\n"
         "if os.path.exists(CHEMIN_MODELE_HANDBALL):\n"
         "    modele_config = ModeleConfig.pour_handball(CHEMIN_MODELE_HANDBALL)\n"
@@ -219,13 +173,13 @@ CELLULES = [
         "print(f\"Tracker : {TRACKER}\")"
     ),
     md(
-        "## 6. Test rapide sur clip court\n"
+        "## 5. Test rapide sur clip court\n"
         "\n"
         "Avant le pipeline complet, on lance une passe rapide pour valider l'enchainement :\n"
         "- subsample agressif (1 frame sur 5)\n"
         "- pas de video radar ni decoupage : on veut juste verifier que la chaine tient debout\n"
         "\n"
-        "Sur un clip de 60s a 25fps : ~300 inferences au lieu de 1500, soit ~10-15s sur T4."
+        "Sur un clip de 60s a 25fps : ~300 inferences au lieu de 1500."
     ),
     code(
         "from pivot_ai.pipeline import traiter_match_complet\n"
@@ -259,19 +213,9 @@ CELLULES = [
         "print(resultat_test.stats_joueurs.head(10))"
     ),
     md(
-        "## 7. Pipeline complet\n"
+        "## 6. Pipeline complet\n"
         "\n"
-        "Avec `subsample=2` (1 frame sur 2), on a une bonne qualite de tracking pour ~1500 inferences/min sur T4.\n"
-        "\n"
-        "**Estimation temps** (vidant les caches GPU avant) :"
-    ),
-    code(
-        "nb_inferences = total // 2  # subsample=2\n"
-        "vitesse_t4 = 25  # inferences/s en moyenne sur T4 avec YOLOv8m\n"
-        "duree_estimee_min = nb_inferences / vitesse_t4 / 60\n"
-        "print(f\"Estimation : ~{duree_estimee_min:.1f} min de detection sur T4\")\n"
-        "print(f\"+ tracking + classification + video SBS + decoupage ≈ +20-30%\")\n"
-        "print(f\"Total estime : {duree_estimee_min * 1.3:.1f} min\")"
+        "Le pipeline traite une image sur deux avec `subsample=2`."
     ),
     code(
         "import torch\n"
@@ -319,7 +263,7 @@ CELLULES = [
         "print(f\"  Parquet : {OUTPUTS_DIR}/stats_joueurs.parquet\")\n"
         "print(f\"  Video radar SBS : {resultat.chemin_video_radar}\")"
     ),
-    md("## 8. Visualiser quelques frames du rendu final"),
+    md("## 7. Visualiser quelques frames du rendu final"),
     code(
         "import matplotlib.pyplot as plt\n"
         "\n"
@@ -340,7 +284,7 @@ CELLULES = [
         "plt.show()"
     ),
     md(
-        "## 9. Heatmap d'un joueur\n"
+        "## 8. Heatmap d'un joueur\n"
         "\n"
         "Visualise la densite de presence d'un joueur sur le terrain. On prend par defaut le tracker le plus present."
     ),
@@ -372,7 +316,7 @@ CELLULES = [
         "fig.show()"
     ),
     md(
-        "## 10. Largeur du bloc defensif au cours du temps\n"
+        "## 9. Largeur du bloc defensif au cours du temps\n"
         "\n"
         "Charge le DataFrame de la largeur du bloc defensif (MHB ou ADV) et le trace via plotly."
     ),
@@ -404,10 +348,8 @@ def construire_notebook() -> dict:
     return {
         "cells": CELLULES,
         "metadata": {
-            "colab": {"provenance": [], "gpuType": "T4"},
             "kernelspec": {"display_name": "Python 3", "name": "python3"},
             "language_info": {"name": "python"},
-            "accelerator": "GPU",
         },
         "nbformat": 4,
         "nbformat_minor": 0,

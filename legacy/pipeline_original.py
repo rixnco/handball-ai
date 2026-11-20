@@ -1,6 +1,6 @@
 """Code monolithique d'origine - REFERENCE UNIQUEMENT.
 
-Ce fichier contient le pipeline Colab d'origine de Tristan, avant refactoring.
+Ce fichier contient le pipeline d'origine de Tristan, avant refactoring.
 La logique metier qui marche (homographie, tracking, classification couleur,
 rendu radar) doit etre conservee et migree dans les modules `pivot_ai/`.
 
@@ -15,19 +15,17 @@ inference locale via pivot_ai.detection.DetecteurLocal.
 # ============================================================
 import os
 import pickle
+from pathlib import Path
 import base64
 import requests
 from collections import defaultdict, Counter
 import numpy as np
 import cv2
 
-# --- 1. Drive + paths ---
-# from google.colab import drive
-# drive.mount('/content/drive', force_remount=False)
-DRIVE_ROOT  = "/content/drive/MyDrive/PIVOT_AI"
-CLIPS_DIR   = f"{DRIVE_ROOT}/raw_clips"
-OUTPUTS_DIR = f"{DRIVE_ROOT}/outputs"
-# os.makedirs(OUTPUTS_DIR, exist_ok=True)
+# --- 1. Chemins locaux ---
+DATA_ROOT = Path(__file__).resolve().parents[1] / "data"
+CLIPS_DIR = str(DATA_ROOT / "raw_clips")
+OUTPUTS_DIR = str(DATA_ROOT / "outputs")
 
 # --- 2. Installs ---
 # !pip install -q "supervision==0.25.1" tqdm scikit-learn plotly
@@ -36,10 +34,7 @@ from sklearn.cluster import KMeans
 from tqdm import tqdm
 
 # --- 3. API Roboflow (A REMPLACER PAR INFERENCE LOCALE) ---
-# from google.colab import userdata
-# ROBOFLOW_API_KEY = userdata.get('ROBOFLOW_API_KEY')
-ROBOFLOW_API_KEY = ""  # placeholder
-os.environ['ROBOFLOW_API_KEY'] = ROBOFLOW_API_KEY
+ROBOFLOW_API_KEY = os.environ.get('ROBOFLOW_API_KEY', '')
 
 # --- 4. Constantes modele ---
 MODEL_ID = "handball-detection-fj8rc/2"

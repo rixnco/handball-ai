@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 import cv2
 import supervision as sv
 
+from pivot_ai.video import positionner_capture
+
 if TYPE_CHECKING:
     from pivot_ai.detection import DetecteurLocal
 
@@ -101,6 +103,7 @@ def tracker_video_botsort(
     subsample: int = 1,
     chemin_config: str | Path | None = None,
     max_frames: int | None = None,
+    frame_debut: int = 0,
 ) -> tuple[dict[int, sv.Detections], dict[int, int]]:
     """Detecte ET tracke via BoT-SORT + ReID (Ultralytics `model.track`).
 
@@ -118,7 +121,8 @@ def tracker_video_botsort(
         detecteur: DetecteurLocal (expose .model YOLO Ultralytics)
         subsample: 1 frame sur N fournie au tracker
         chemin_config: yaml BoT-SORT (defaut : config ReID livree)
-        max_frames: limite optionnelle (index frame source)
+        max_frames: nombre maximal d'images depuis frame_debut
+        frame_debut: index de la première image dans la source
 
     Returns:
         tuple (detections_trackees, classe_finale), meme format que
@@ -133,7 +137,7 @@ def tracker_video_botsort(
     cap = cv2.VideoCapture(str(chemin_video))
     if not cap.isOpened():
         raise RuntimeError(f"Impossible d'ouvrir la video : {chemin_video}")
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - frame_debut
     if max_frames is not None:
         total = min(total, max_frames)
 
@@ -143,6 +147,7 @@ def tracker_video_botsort(
     classes_observees: dict[int, Counter] = defaultdict(Counter)
 
     try:
+        positionner_capture(cap, frame_debut)
         fi = 0
         while fi < total:
             ret, frame = cap.read()

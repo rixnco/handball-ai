@@ -1,6 +1,6 @@
 # Code legacy
 
-`pipeline_colab.py` contient le pipeline monolithique d'origine, qui sert de reference de specification pour le refactor.
+`pipeline_original.py` contient le pipeline monolithique d'origine, qui sert de reference de specification pour le refactor.
 
 **Ne pas executer ce fichier directement.** Toute la logique doit etre migree dans les modules `pivot_ai/`.
 
@@ -14,4 +14,3 @@ Points cles a conserver lors du refactor :
 
 Points a SUPPRIMER ou remplacer :
 - Dependance `detect.roboflow.com` (API cloud) -> inference locale via `DetecteurLocal`
-- Code Colab specifique (drive.mount, userdata) -> deporte dans le notebook thin

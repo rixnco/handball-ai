@@ -18,7 +18,8 @@ pivot-ai-handball/
 │   ├── config.py            # Constantes et schemas
 │   └── cli.py               # CLI `pivot-ai`
 ├── notebooks/
-│   └── colab_pivot_ai.ipynb # Notebook Colab "thin"
+│   ├── pivot_ai.ipynb      # Inférence locale
+│   └── train_handball_yolo.ipynb  # Entraînement local
 ├── scripts/
 │   └── build_notebook.py    # Generation du notebook depuis Python
 ├── tests/                   # Tests unitaires
@@ -29,15 +30,6 @@ pivot-ai-handball/
 └── pyproject.toml
 ```
 
-## Quickstart Colab
-
-1. Ouvre le notebook depuis GitHub :
-   `https://colab.research.google.com/github/tristan-paloc/pivot-ai-handball/blob/main/notebooks/colab_pivot_ai.ipynb`
-
-2. Le notebook clone le repo, installe les deps, monte ton Drive et execute le pipeline.
-
-3. Tes videos doivent etre dans `/MyDrive/PIVOT_AI/raw_clips/`.
-
 ## Modele de detection : COCO generique vs fine-tune handball
 
 Par defaut, le pipeline utilise **YOLOv8m pre-entraine COCO** : il ne connait que la classe
@@ -46,21 +38,20 @@ tracking fragmente (beaucoup d'IDs pour peu de joueurs reels) car les detections
 
 Pour un vrai saut de qualite, **entraine un modele specialise handball** :
 
-1. Ouvre `notebooks/train_handball_yolo.ipynb` sur Colab (T4 GPU).
-2. Cree un compte [Roboflow](https://roboflow.com) gratuit, recupere ta cle API
-   ([app.roboflow.com/settings/api](https://app.roboflow.com/settings/api)) et ajoute-la aux
-   Secrets Colab sous le nom `ROBOFLOW_API_KEY`.
-3. Le notebook telecharge le dataset
-   [handball-detection-fj8rc](https://universe.roboflow.com/handballdetectionvictorcollado/handball-detection-fj8rc)
-   (4 classes players/goalkeeper/referees/ball), fine-tune un YOLOv8m, affiche les mAP et exporte
-   `best.pt` vers `/MyDrive/PIVOT_AI/models/handball_yolov8m.pt`.
-4. Dans le notebook d'inference, la cellule "Modele de detection" detecte automatiquement ce fichier
-   et l'utilise via `ModeleConfig.pour_handball(...)`.
+1. Ouvre `notebooks/train_handball_yolo.ipynb` avec le noyau Python du projet sous WSL et un GPU CUDA.
+2. Choisis un export parmi ceux recensés dans [la provenance des datasets](data/datasets/README.md).
+   Le notebook le cherche dans `data/datasets/`. Pour télécharger un export absent, utilise
+   une clé Roboflow dans la variable d’environnement `ROBOFLOW_API_KEY`. Installe au besoin le SDK avec
+   `python -m pip install roboflow`.
+3. Le notebook entraîne YOLOv8m, affiche les métriques et exporte les meilleurs poids vers
+   `models/handball_yolov8m.pt`.
+4. Utilise le chemin affiché à l’export dans la cellule « Modele de detection » du notebook
+   d’inférence.
 
 Le pipeline remappe les classes du modele vers `CLASSES_HANDBALL` **par nom** (pas par ordre), donc
 peu importe l'ordre des classes dans le dataset d'entrainement.
 
-En local / CLI, pointe le modele explicitement :
+Depuis Python, indique le modèle explicitement :
 
 ```python
 from pivot_ai.config import ModeleConfig
@@ -70,36 +61,104 @@ config = ModeleConfig.pour_handball("models/handball_yolov8m.pt")
 traiter_match_complet(..., modele_config=config)
 ```
 
-### Authentification GitHub
+### Extraire des images à annoter avec FFmpeg
 
-Le repo est **public** : le clone HTTPS depuis Colab fonctionne en anonyme, aucun token requis.
-
-> **Si tu repasses le repo en prive** : la 1ere cellule du notebook doit alors lire un Personal Access Token via Colab Secrets. Le mecanisme complet (PAT fine-grained + secret `GITHUB_TOKEN`) etait implemente jusqu'au commit `b33dc2d`, recuperable au besoin via :
-> ```bash
-> git show b33dc2d:scripts/build_notebook.py
-> ```
-
-### Pieges Colab a connaitre
-
-- **Quota T4 gratuit** : environ 12h cumulees sur 24h, degradation au-dela de 15h. Si tu travailles intensivement, planifie ta journee.
-- **Mount Drive** : token unique par session. Si Colab te deconnecte, il faudra re-mount (cellule 3 du notebook).
-- **Premier `pip install`** : le notebook installe les deps runtime seulement (`pip install -e .`, sans `[dev]`) pour eviter les conflits de versions avec les paquets Colab. Compter 1-3 min la 1ere fois, quasi instantane ensuite (cache pip de la VM).
-- **Lancement** : `Execution > Tout executer`. Le seul geste manuel est d'autoriser le mount Drive quand il le demande. La calibration homographie est persistee sur Drive (`correspondances.json`), donc a saisir une seule fois.
-- **Estimation temps de traitement** : un match 60min @ 25fps avec `subsample=3` (1 frame sur 3) genere ~30k inferences, soit ~20 min sur T4. Le notebook affiche une estimation avant lancement.
-- **VRAM** : 15 Go sur T4 gratuit, suffisant pour YOLOv8m batch 1. Si OOM, passer en CPU (`device="cpu"` dans `ModeleConfig`, beaucoup plus lent).
-- **Pin `supervision<0.30`** : `sv.ByteTrack` est deprecated depuis 0.28 et sera supprime en 0.30. Le `pyproject.toml` pin la version pour eviter les surprises. Migration ByteTrack -> nouveau tracker = dette technique pour un sprint futur.
-- **Re-execution complete** : pour repartir d'un etat propre, "Execution > Tout reinitialiser" puis relancer les cellules dans l'ordre.
-
-## Quickstart local
+Depuis la racine du dépôt, crée le dossier de destination par défaut.
 
 ```bash
-git clone https://github.com/tristan-paloc/pivot-ai-handball.git
-cd pivot-ai-handball
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# .venv\Scripts\activate     # Windows
-pip install -e ".[dev]"
+mkdir -p data/annotation/images
 ```
+
+**Échantillonner une vidéo toutes les deux secondes**
+
+```bash
+start_index=1
+ffmpeg -n -i data/raw_clips/mon_match.mp4 -vf "fps=1/2" -q:v 2 \
+  -start_number "$start_index" \
+  data/annotation/images/mon_match_%05d.jpg
+```
+
+`fps=1/2` extrait une image toutes les deux secondes. Utilise `fps=1/5` pour
+espacer les images de cinq secondes. `%05d` numérote les images sur cinq chiffres.
+Pour reprendre après `mon_match_00060.jpg`, règle `start_index=61`. Cette valeur
+est transmise à l’option FFmpeg `-start_number` et règle le numéro du premier JPEG.
+
+**Extraire des images sur un passage de 30 secondes**
+
+```bash
+start_index=1
+ffmpeg -n -ss 00:12:30 -i data/raw_clips/mon_match.mp4 -t 30 \
+  -vf "fps=2" -q:v 2 -start_number "$start_index" \
+  data/annotation/images/mon_match_12m30_%05d.jpg
+```
+
+**Extraire une seule image à un instant précis**
+
+```bash
+ffmpeg -n -ss 00:12:42.500 -i data/raw_clips/mon_match.mp4 -frames:v 1 \
+  -q:v 2 data/annotation/images/mon_match_12m42s500.jpg
+```
+
+Les images gardent la résolution de la vidéo. `-q:v 2` produit des JPEG de haute
+qualité et `-n` protège les fichiers existants. Change le préfixe pour chaque
+vidéo ou passage afin de garder des noms distincts.
+
+### Découper une vidéo de match en extraits
+
+**Extraire 30 secondes à partir de 12 min 30 s**
+
+```bash
+ffmpeg -n -ss 00:12:30 -i data/raw_clips/mon_match_complet.mp4 -t 30 \
+  -map 0:v:0 -map '0:a:0?' -c:v libx264 -crf 18 -c:a aac \
+  data/raw_clips/mon_match_12m30_30s.mp4
+```
+
+Remplace `00:12:30` par l’instant de départ et `30` par la durée souhaitée en
+secondes. La résolution est conservée. L’audio est inclus si la vidéo en contient.
+
+**Découper le match entier en extraits successifs de 30 secondes**
+
+```bash
+duree=30
+dossier="data/raw_clips/mon_match_${duree}s"
+mkdir "$dossier" && ffmpeg -i data/raw_clips/mon_match_complet.mp4 \
+  -map 0:v:0 -map '0:a:0?' -c:v libx264 -crf 18 -c:a aac \
+  -force_key_frames "expr:gte(t,n_forced*${duree})" \
+  -f segment -segment_time "$duree" -reset_timestamps 1 \
+  "$dossier/extrait_%03d.mp4"
+```
+
+Modifie `duree` pour choisir la longueur des extraits. Le dernier peut être plus
+court. Le découpage démarre uniquement si le dossier de destination est créé,
+ce qui évite de remplacer des extraits existants.
+
+## Installation locale sous WSL
+
+Dans Ubuntu (WSL), depuis la racine du dépôt, utilise Python 3.11 et FFmpeg.
+Avec Python 3.11 déjà installé, crée l’environnement avec `python3.11 -m venv .venv`.
+Avec [uv](https://docs.astral.sh/uv/getting-started/installation/), tu peux installer
+Python 3.11 et créer l’environnement en une commande.
+
+```bash
+uv venv --python 3.11 --seed .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]' --extra-index-url https://download.pytorch.org/whl/cu132 -c .devcontainer/constraints.txt
+python -c 'import torch; print(torch.__version__, torch.cuda.is_available())'
+```
+
+La dernière commande doit afficher `True` pour utiliser le GPU NVIDIA.
+
+### Lancer les notebooks
+
+Lance `jupyter notebook` depuis le dépôt avec le `venv` activé. Dans VS Code,
+ouvre le dossier depuis un terminal WSL avec `code .` et sélectionne
+`.venv/bin/python` comme interpréteur et comme noyau Jupyter.
+Pour enregistrer un noyau nommé, lance depuis l’environnement activé
+`python -m ipykernel install --user --name pivot-ai-handball-wsl --display-name "Python (Pivot AI Handball WSL)"`.
+
+Dans `notebooks/pivot_ai.ipynb`, indique le nom du clip déposé dans
+`data/raw_clips/`. Le notebook charge le JSON de calibration à côté de la vidéo.
+Les résultats sont écrits dans `data/outputs/`.
 
 ### Lancer le pipeline via CLI
 
@@ -107,22 +166,56 @@ pip install -e ".[dev]"
 pivot-ai traiter \
   --video data/raw_clips/mon_clip.mp4 \
   --output data/outputs/ \
-  --homographie docs/correspondances_example.json \
   --subsample 2
 ```
 
 Flags optionnels :
-- `--no-video-radar` : ne genere pas la video SBS broadcast+radar
+- `--debut HH:MM:SS:cc` indique où commencer dans la vidéo, avec `cc` en centièmes de seconde (`00:00:00:00` par défaut). La notation FFmpeg `HH:MM:SS.cc` est aussi acceptée.
+- `--duree SECONDES` limite le traitement à cette durée à partir du début choisi. Sans cette option, le traitement va jusqu'à la fin de la vidéo.
+- `--modele models/handball_yolov8m.pt` : utilise les poids YOLO entraînés sur le handball. Par défaut, la CLI utilise YOLOv8m COCO.
+- `--homographie CHEMIN` : remplace le chemin de calibration déduit de la vidéo.
+- `--no-video-radar` désactive la vidéo de sortie. Par défaut, elle empile la source annotée et la projection. Chaque panneau mesure 1920 × 540 (32:9).
+- `--no-fisheye` désactive la correction radiale du radar. Par défaut, si A à F sont présents, elle utilise A–E–B et C–F–D et recale les quatre coins sur un rectangle de 40 × 20 m. La vidéo source reste intacte.
+- `--equipes` active la classification par couleur de maillot.
+- `--stats` active le calcul et l'export des statistiques. Combinez les deux options pour exporter aussi les largeurs des blocs défensifs.
 - `--no-decoupage` : ne decoupe pas les actions detectees
 - `--tracker {bytetrack,botsort}` : backend de tracking. `bytetrack` (defaut,
   rapide, mouvement seul) ou `botsort` (ReID par apparence : maintient les IDs
   au contact/occlusion, plus lent). `botsort` necessite un vrai modele YOLO.
 - `--min-frames-track N` : ecarte les trackers vus sur moins de N frames (fragments)
 
+Par exemple, ajoutez `--debut 00:01:00:25 --duree 30` pour analyser 30 secondes à partir de 1 min et 25 centièmes. Le pipeline se positionne sur l'image la plus proche dans la vidéo source et traite directement la séquence. Les horodatages des résultats repartent de zéro.
+
 Codes de sortie :
 - `0` : succes
 - `1` : erreur runtime (video ou homographie invalide, exception pipeline)
 - `2` : argument obligatoire manquant
+
+### Créer la calibration à la souris
+
+Depuis la racine du dépôt, dans un environnement avec affichage graphique et Tkinter
+(`python3-tk` sous Debian ou Ubuntu), lance :
+
+```bash
+python -m scripts.calibrer_terrain data/raw_clips/mon_clip.mp4
+```
+
+Le script affiche la frame du milieu. Utilise `--frame 250` pour choisir une autre
+frame. Pour calibrer à partir d’une image fixe, passe l’image en entrée et ajoute
+`--video-reference chemin/du/match.mp4`. Clique sur un repère du schéma sous l’image,
+puis clique sur son emplacement dans l’image ou dans la marge grise. La molette
+zoome autour du pointeur. Fais glisser avec le bouton droit pour déplacer la vue,
+ou clique sur **Ajuster l’image** pour revenir à la vue d’ensemble.
+Par défaut, la marge ajoute 10 %
+de la largeur à gauche et à droite, et 10 % de la hauteur en haut et en bas.
+Utilise `--marge 150` pour régler les quatre côtés à 150 pixels. Les coordonnées
+du JSON restent relatives à l’image d’origine et peuvent donc dépasser son cadre.
+Place au moins quatre repères répartis sur le terrain,
+puis clique sur **Enregistrer**. Pour `data/raw_clips/mon_clip.mp4`, le script écrit
+`data/raw_clips/mon_clip.mp4.correspondances.json`. Le notebook et la CLI retrouvent
+ce fichier automatiquement.
+S’il existe déjà, indique une autre destination avec `--sortie` ou utilise `--force`
+pour le remplacer.
 
 ### Format du fichier homographie
 
@@ -164,9 +257,9 @@ Tests qui requierent `ffmpeg` (3 tests de decoupage video) : auto-skip si `ffmpe
 - [x] Migration Roboflow Cloud -> inference locale GPU (`DetecteurLocal`)
 - [x] Module stats joueur (distance, vitesse, heatmap, bloc defensif)
 - [x] Decoupage actions par heuristique simple
-- [x] Pipeline match complet (avec interpolation et video SBS)
+- [x] Pipeline match complet (avec interpolation et vidéo radar)
 - [x] CLI `pivot-ai traiter`
-- [x] Notebook Colab end-to-end
+- [x] Notebook d’inférence local
 - [x] Fine-tune modele YOLO handball (4 classes) + notebook d'entrainement
 - [x] Tracker BoT-SORT + ReID (maintient les IDs au contact) en option
 - [ ] Detection ballon -> possession et passes

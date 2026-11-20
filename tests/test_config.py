@@ -38,6 +38,19 @@ def test_terrain_est_dans_zone() -> None:
     assert not config.est_dans_zone((20.0, 19.0))  # trop haut
 
 
+def test_terrain_tolere_les_ailiers_pres_des_quatre_coins() -> None:
+    config = TerrainConfig()
+    for x in (1.0, 39.0):
+        for y in (0.5, 19.5):
+            assert config.est_dans_zone((x, y))
+
+    assert config.est_dans_zone((-0.5, -0.5))
+    assert config.est_dans_zone((40.5, 20.5))
+    assert not config.est_dans_zone((-0.6, 0.5))
+    assert not config.est_dans_zone((0.5, 20.6))
+    assert not config.est_dans_zone((5.0, 0.5))
+
+
 def test_points_terrain_dimensions() -> None:
     """Les points caracteristiques sont dans le rectangle 40x20."""
     for nom, (x, y) in POINTS_TERRAIN_M.items():

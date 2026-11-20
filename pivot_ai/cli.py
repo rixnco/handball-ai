@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
+import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from pivot_ai.config import configurer_logging
+from pivot_ai.config import ModeleConfig, chemin_correspondances_video, configurer_logging
 from pivot_ai.homographie import Correspondance
 from pivot_ai.pipeline import ResultatPipeline, traiter_match_complet
 
@@ -88,30 +91,33 @@ def _charger_correspondances(chemin: Path) -> dict[str, Correspondance]:
 # ---------------------------------------------------------------------------
 
 
-def _logger_recap(resultat: ResultatPipeline, dossier_sortie: Path) -> None:
+def _logger_recap(
+    resultat: ResultatPipeline, dossier_sortie: Path, *, equipes: bool, stats: bool
+) -> None:
     """Logge un recap des artefacts produits."""
     logger.info("=" * 60)
     logger.info("Pipeline termine. Artefacts dans : %s", dossier_sortie)
     logger.info("-" * 60)
     logger.info("Video source : %s", resultat.chemin_video_source)
-    logger.info("Stats joueurs : %s", dossier_sortie / "stats_joueurs.csv")
-    logger.info("                %s", dossier_sortie / "stats_joueurs.parquet")
+    if stats:
+        logger.info("Stats joueurs : %s", dossier_sortie / "stats_joueurs.csv")
+        logger.info("                %s", dossier_sortie / "stats_joueurs.parquet")
     logger.info("Nb trackers totaux : %d",
                 resultat.metadonnees.get("nb_trackers_total", 0))
-    logger.info("Nb joueurs classes en equipe : %d",
-                resultat.metadonnees.get("nb_joueurs_classes", 0))
-    logger.info("--- Qualite tracking (%s) ---",
-                resultat.metadonnees.get("tracker", "?"))
-    logger.info("Reprises d'ID (switches suspectes) : %d",
-                resultat.metadonnees.get("nb_reprises_id", 0))
-    logger.info("Joueurs estimes (apres recollage) : %d",
-                resultat.metadonnees.get("nb_joueurs_estimes", 0))
+    if equipes:
+        logger.info("Nb joueurs classes en equipe : %d",
+                    resultat.metadonnees.get("nb_joueurs_classes", 0))
+    if stats:
+        logger.info("--- Qualite tracking (%s) ---",
+                    resultat.metadonnees.get("tracker", "?"))
+        logger.info("Reprises d'ID (switches suspectes) : %d",
+                    resultat.metadonnees.get("nb_reprises_id", 0))
+        logger.info("Joueurs estimes (apres recollage) : %d",
+                    resultat.metadonnees.get("nb_joueurs_estimes", 0))
     logger.info("Joueurs exploitables (apres filtre) : %d",
                 resultat.metadonnees.get("nb_joueurs_stats", 0))
     if resultat.chemin_video_radar is not None:
-        logger.info("Video radar SBS : %s", resultat.chemin_video_radar)
-    else:
-        logger.info("Video radar SBS : (non generee)")
+        logger.info("Vidéo radar : %s", resultat.chemin_video_radar)
     logger.info("Nb actions detectees : %d", len(resultat.actions_detectees))
     logger.info("Nb clips decoupes : %d", len(resultat.clips_decoupes))
     if resultat.clips_decoupes:
@@ -132,19 +138,27 @@ def commande_traiter(args: argparse.Namespace) -> int:
         logger.error("Video introuvable : %s", chemin_video)
         return 1
 
-    if not args.homographie:
-        logger.error(
-            "Argument --homographie obligatoire : "
-            "fournir un fichier JSON avec les correspondances pixel <-> terrain."
-        )
-        return 2
-
-    chemin_homographie = Path(args.homographie)
+    chemin_homographie = (
+        Path(args.homographie) if args.homographie else chemin_correspondances_video(chemin_video)
+    )
     try:
         correspondances = _charger_correspondances(chemin_homographie)
     except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
         logger.error("Erreur chargement homographie : %s", exc)
         return 1
+
+    modele_config = None
+    if args.modele is not None:
+        if not args.modele.is_file():
+            logger.error("Fichier de poids introuvable : %s", args.modele)
+            return 1
+        modele_config = ModeleConfig.pour_handball(str(args.modele))
+    if args.exclude:
+        modele_config = replace(
+            modele_config or ModeleConfig(), classes_a_exclure=tuple(args.exclude)
+        )
+    if args.conf is not None:
+        modele_config = replace(modele_config or ModeleConfig(), confiance_min=args.conf)
 
     dossier_sortie = Path(args.output)
     dossier_sortie.mkdir(parents=True, exist_ok=True)
@@ -161,23 +175,50 @@ def commande_traiter(args: argparse.Namespace) -> int:
             chemin_video=chemin_video,
             correspondances_homographie=correspondances,
             dossier_sortie=dossier_sortie,
+            modele_config=modele_config,
             subsample=args.subsample,
             generer_video_radar=not args.no_video_radar,
             decouper_actions=not args.no_decoupage,
             min_frames_track=args.min_frames_track,
             tracker=args.tracker,
+            duree=args.duree,
+            debut=args.debut,
+            classer_equipes=args.equipes,
+            calculer_stats=args.stats,
+            corriger_fisheye=not args.no_fisheye,
         )
     except Exception:
         logger.exception("Echec du pipeline")
         return 1
 
-    _logger_recap(resultat, dossier_sortie)
+    _logger_recap(resultat, dossier_sortie, equipes=args.equipes, stats=args.stats)
     return 0
 
 
 # ---------------------------------------------------------------------------
 # Parser et point d'entree
 # ---------------------------------------------------------------------------
+
+
+def _horodatage_debut(valeur: str) -> float:
+    if not re.fullmatch(r"[0-9]{2}:[0-5][0-9]:[0-5][0-9][:\.][0-9]{2}", valeur):
+        raise argparse.ArgumentTypeError("utilisez HH:MM:SS:cc (heures, minutes, secondes, centièmes)")
+    heures, minutes, secondes = map(int, valeur[:8].split(":"))
+    return heures * 3600 + minutes * 60 + secondes + int(valeur[9:]) / 100
+
+
+def _duree_positive(valeur: str) -> float:
+    secondes = float(valeur)
+    if not math.isfinite(secondes) or secondes <= 0:
+        raise argparse.ArgumentTypeError("la durée doit être finie et strictement positive")
+    return secondes
+
+
+def _seuil_confiance(valeur: str) -> float:
+    seuil = float(valeur)
+    if not 0 <= seuil <= 1:
+        raise argparse.ArgumentTypeError("le seuil doit être compris entre 0 et 1")
+    return seuil
 
 
 def construire_parser() -> argparse.ArgumentParser:
@@ -198,9 +239,33 @@ def construire_parser() -> argparse.ArgumentParser:
         "--output", required=True, help="Dossier de sortie"
     )
     p_traiter.add_argument(
+        "--debut", type=_horodatage_debut, default=0.0, metavar="HH:MM:SS:cc",
+        help="Début du traitement, avec centièmes de seconde (par défaut : 00:00:00:00).",
+    )
+    p_traiter.add_argument(
+        "--duree", type=_duree_positive, metavar="SECONDES",
+        help="Durée du traitement à partir du début choisi (par défaut : jusqu'à la fin).",
+    )
+    p_traiter.add_argument(
         "--homographie",
-        required=True,
-        help="Fichier JSON avec les correspondances pixel <-> terrain (>= 4 points)",
+        help="Fichier JSON de calibration (par défaut : <nom_de_la_vidéo>.correspondances.json à côté de la vidéo)",
+    )
+    p_traiter.add_argument(
+        "--modele",
+        type=Path,
+        help="Fichier de poids YOLO entraîné sur le handball (par défaut : YOLOv8m COCO)",
+    )
+    p_traiter.add_argument(
+        "--exclude",
+        action="append",
+        metavar="CLASS",
+        help="Exclut une classe du modèle par son nom. Option répétable.",
+    )
+    p_traiter.add_argument(
+        "--conf",
+        type=_seuil_confiance,
+        metavar="SEUIL",
+        help="Seuil de confiance YOLO entre 0 et 1 (par défaut 0.35).",
     )
     p_traiter.add_argument(
         "--subsample", type=int, default=2, help="1 frame sur N (defaut 2)"
@@ -221,7 +286,20 @@ def construire_parser() -> argparse.ArgumentParser:
     p_traiter.add_argument(
         "--no-video-radar",
         action="store_true",
-        help="Ne pas generer la video SBS radar (par defaut elle est generee)",
+        help="Désactive la vidéo avec le radar sous la source.",
+    )
+    p_traiter.add_argument(
+        "--equipes", action="store_true",
+        help="Active la classification des équipes par couleur de maillot.",
+    )
+    p_traiter.add_argument(
+        "--stats", action="store_true",
+        help="Active le calcul et l'export des statistiques.",
+    )
+    p_traiter.add_argument(
+        "--no-fisheye",
+        action="store_true",
+        help="Désactive la correction radiale estimée avec les repères A à F.",
     )
     p_traiter.add_argument(
         "--no-decoupage",

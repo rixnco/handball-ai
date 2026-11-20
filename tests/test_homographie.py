@@ -63,3 +63,24 @@ def test_projeter_bbox_pieds() -> None:
     # Le centre-bas est en (150, 400), qui projette sur terrain
     assert 5.0 < x_m < 7.0
     assert 15.0 < y_m < 17.0
+
+
+def test_correction_fisheye_redresse_les_lignes_de_touche() -> None:
+    pixels = {
+        "A": (100, 100), "B": (900, 100), "C": (900, 500), "D": (100, 500),
+        "E": (500, 80), "F": (500, 520),
+    }
+    terrain = {
+        "A": (0.0, 0.0), "B": (40.0, 0.0), "C": (40.0, 20.0), "D": (0.0, 20.0),
+        "E": (20.0, 0.0), "F": (20.0, 20.0),
+    }
+    correspondances = {
+        nom: {"pixel": pixel, "terrain_m": terrain[nom]} for nom, pixel in pixels.items()
+    }
+
+    homographie = calibrer_homographie(correspondances, corriger_fisheye=True)
+    assert homographie.methode == "fisheye_4pts"
+    for nom, pixel in pixels.items():
+        assert homographie.projeter_point(pixel) == pytest.approx(terrain[nom], abs=0.01)
+
+    assert calibrer_homographie(correspondances).correction_radiale is None

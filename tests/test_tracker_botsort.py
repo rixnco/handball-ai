@@ -1,7 +1,7 @@
 """Tests du backend BoT-SORT : config yaml + routage pipeline.
 
 Le comportement reel de BoT-SORT+ReID (Ultralytics model.track) necessite
-torch + GPU et se valide sur Colab. Ici on verifie ce qui est testable en
+torch + GPU et se valide avec un GPU. Ici on verifie ce qui est testable en
 local : la config est valide, et le pipeline route bien vers le bon backend.
 """
 
