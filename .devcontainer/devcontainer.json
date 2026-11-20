@@ -17,7 +17,7 @@
   "mounts": [
     "source=handball-ai-pip-cache,target=/home/vscode/.cache/pip,type=volume",
     "source=handball-ai-torch-cache,target=/home/vscode/.cache/torch,type=volume",
-    "source=handball-ai-torch-cache,target=/home/vscode/.cache/matplotlib,type=volume",
+    "source=handball-ai-matplotlib-cache,target=/home/vscode/.cache/matplotlib,type=volume",
     "source=handball-ai-ultralytics-cache,target=/home/vscode/.config/Ultralytics,type=volume"
   ],
   "postCreateCommand": "python -m pip install --upgrade pip && python -m pip install -e '.[dev]' --extra-index-url https://download.pytorch.org/whl/cu132 -c .devcontainer/constraints.txt",
