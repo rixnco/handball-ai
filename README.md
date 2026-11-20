@@ -1,141 +1,153 @@
-# pivot-ai-handball
+# handball-ai
 
-Pipeline computer vision pour scouting handball : detection, tracking, stats par joueur, decoupage automatique en actions.
+Computer vision pipeline for handball scouting: detection, tracking, per-player stats, automatic split into actions.
 
 ## Architecture
 
 ```
-pivot-ai-handball/
-├── pivot_ai/                # Module principal
-│   ├── detection.py         # Detection YOLO locale (inference GPU)
-│   ├── tracking.py          # ByteTrack + stabilisation classes
-│   ├── homographie.py       # Projection pixels -> coordonnees terrain
-│   ├── equipes.py           # Classification equipes par KMeans
-│   ├── radar.py             # Rendu radar 2D
-│   ├── stats.py             # Stats joueur (distance, vitesse, heatmap)
-│   ├── decoupage.py         # Decoupage automatique en actions
-│   ├── pipeline.py          # Orchestrateur end-to-end
-│   ├── config.py            # Constantes et schemas
-│   └── cli.py               # CLI `pivot-ai`
+handball-ai/
+├── handball_ai/             # Main package
+│   ├── detection.py         # Local YOLO detection (GPU inference)
+│   ├── tracking.py          # ByteTrack / BoT-SORT + class stabilization
+│   ├── homography.py        # Pixel -> court coordinates projection
+│   ├── teams.py             # Team classification with KMeans
+│   ├── radar.py             # 2D radar rendering
+│   ├── stats.py             # Player stats (distance, speed, heatmap)
+│   ├── metrics.py           # Tracking quality KPIs (ID switches)
+│   ├── clipping.py          # Automatic split into actions
+│   ├── pipeline.py          # End-to-end orchestrator
+│   ├── config.py            # Constants and court configuration
+│   └── cli.py               # `handball-ai` CLI
 ├── notebooks/
-│   ├── pivot_ai.ipynb      # Inférence locale
-│   └── train_handball_yolo.ipynb  # Entraînement local
+│   ├── handball_ai.ipynb          # Local inference
+│   └── train_handball_yolo.ipynb  # Local training
 ├── scripts/
-│   └── build_notebook.py    # Generation du notebook depuis Python
-├── tests/                   # Tests unitaires
+│   ├── build_notebook.py          # Generates the inference notebook from Python
+│   ├── build_train_notebook.py    # Generates the training notebook from Python
+│   ├── calibrate_court.py         # Court mapping editor (Tkinter)
+│   ├── extract_frames.py          # Random frame extraction for annotation
+│   └── copy_yolo_labels.sh        # Copies the train labels to test/valid
+├── tests/                   # Unit tests
 ├── docs/
-│   └── correspondances_example.json  # Modele homographie 10 points
-├── legacy/                  # Code monolithique d'origine (reference)
-├── data/                    # Videos, caches, outputs (ignored par git)
+│   └── court_mapping_example.json  # 10-point court mapping template
+├── legacy/                  # Original monolithic code (reference)
+├── data/                    # Videos, caches, outputs (ignored by git)
 └── pyproject.toml
 ```
 
-## Modele de detection handball
+## Handball detection model
 
-Le pipeline exige un modele YOLO **entraine sur le handball**, qui distingue joueurs, gardiens,
-arbitres et ballon. Il n'y a pas de modele generique par defaut. Pour l'entrainer :
+The pipeline requires a YOLO model **trained on handball**, which tells players, goalkeepers,
+referees and ball apart. There is no generic default model. To train it:
 
-1. Ouvre `notebooks/train_handball_yolo.ipynb` avec le noyau Python du projet sous WSL et un GPU CUDA.
-2. Choisis un export parmi ceux recensés dans [la provenance des datasets](data/datasets/README.md).
-   Le notebook le cherche dans `data/datasets/`. Pour télécharger un export absent, utilise
-   une clé Roboflow dans la variable d’environnement `ROBOFLOW_API_KEY`. Installe au besoin le SDK avec
+1. Open `notebooks/train_handball_yolo.ipynb` with the project Python kernel under WSL and a CUDA GPU.
+2. Pick an export listed in the [dataset provenance](data/datasets/README.md).
+   The notebook looks for it in `data/datasets/`. To download a missing export, set
+   a Roboflow key in the `ROBOFLOW_API_KEY` environment variable. Install the SDK if needed with
    `python -m pip install roboflow`.
-3. Le notebook entraîne YOLO26m (variable `YOLO_BASE`), affiche les métriques et exporte les meilleurs poids vers
+3. The notebook trains YOLO26m (`YOLO_BASE` variable), shows the metrics and exports the best weights to
    `models/handball_yolo26m.pt`.
-4. Utilise le chemin affiché à l’export dans la cellule « Modele de detection » du notebook
-   d’inférence.
+4. Use the path printed at export time in the "Detection model" cell of the inference
+   notebook.
 
-Le detecteur convertit les classes du modele vers `CLASSES_HANDBALL` **par nom** (pas par ordre), donc
-peu importe l'ordre des classes dans le dataset d'entrainement. Un modele sans aucune classe handball
-est refuse au chargement.
+The detector maps the model classes to `HANDBALL_CLASSES` **by name** (not by order), so the
+class order of the training dataset does not matter. A model without any handball class
+is rejected at load time.
 
-Depuis Python, indique le modèle explicitement :
+From Python, give the model explicitly:
 
 ```python
-from pivot_ai.detection import Detector
-from pivot_ai.pipeline import traiter_match_complet
+from handball_ai.detection import Detector
+from handball_ai.pipeline import process_match
 
-detecteur = Detector("models/handball_yolo26m.pt", confidence=0.35, exclude=["ball"])
-traiter_match_complet(..., detecteur=detecteur)
+detector = Detector("models/handball_yolo26m.pt", confidence=0.35, exclude=["ball"])
+process_match(..., detector=detector)
 ```
 
-### Extraire des images à annoter avec FFmpeg
+### Extract frames to annotate with FFmpeg
 
-Depuis la racine du dépôt, crée le dossier de destination par défaut.
+From the repository root, create the default destination folder.
 
 ```bash
 mkdir -p data/annotation/images
 ```
 
-**Échantillonner une vidéo toutes les deux secondes**
+**Sample a video every two seconds**
 
 ```bash
 start_index=1
-ffmpeg -n -i data/raw_clips/mon_match.mp4 -vf "fps=1/2" -q:v 2 \
+ffmpeg -n -i data/raw_clips/my_match.mp4 -vf "fps=1/2" -q:v 2 \
   -start_number "$start_index" \
-  data/annotation/images/mon_match_%05d.jpg
+  data/annotation/images/my_match_%05d.jpg
 ```
 
-`fps=1/2` extrait une image toutes les deux secondes. Utilise `fps=1/5` pour
-espacer les images de cinq secondes. `%05d` numérote les images sur cinq chiffres.
-Pour reprendre après `mon_match_00060.jpg`, règle `start_index=61`. Cette valeur
-est transmise à l’option FFmpeg `-start_number` et règle le numéro du premier JPEG.
+`fps=1/2` extracts one frame every two seconds. Use `fps=1/5` to space frames
+by five seconds. `%05d` numbers the frames on five digits.
+To resume after `my_match_00060.jpg`, set `start_index=61`. This value
+is passed to the FFmpeg `-start_number` option and sets the number of the first JPEG.
 
-**Extraire des images sur un passage de 30 secondes**
+**Extract frames over a 30-second passage**
 
 ```bash
 start_index=1
-ffmpeg -n -ss 00:12:30 -i data/raw_clips/mon_match.mp4 -t 30 \
+ffmpeg -n -ss 00:12:30 -i data/raw_clips/my_match.mp4 -t 30 \
   -vf "fps=2" -q:v 2 -start_number "$start_index" \
-  data/annotation/images/mon_match_12m30_%05d.jpg
+  data/annotation/images/my_match_12m30_%05d.jpg
 ```
 
-**Extraire une seule image à un instant précis**
+**Extract a single frame at a precise instant**
 
 ```bash
-ffmpeg -n -ss 00:12:42.500 -i data/raw_clips/mon_match.mp4 -frames:v 1 \
-  -q:v 2 data/annotation/images/mon_match_12m42s500.jpg
+ffmpeg -n -ss 00:12:42.500 -i data/raw_clips/my_match.mp4 -frames:v 1 \
+  -q:v 2 data/annotation/images/my_match_12m42s500.jpg
 ```
 
-Les images gardent la résolution de la vidéo. `-q:v 2` produit des JPEG de haute
-qualité et `-n` protège les fichiers existants. Change le préfixe pour chaque
-vidéo ou passage afin de garder des noms distincts.
+Frames keep the video resolution. `-q:v 2` produces high quality JPEGs and
+`-n` protects existing files. Change the prefix for each video or passage to
+keep distinct names.
 
-### Découper une vidéo de match en extraits
-
-**Extraire 30 secondes à partir de 12 min 30 s**
+`scripts/extract_frames.py` picks frames at random over the whole video instead:
 
 ```bash
-ffmpeg -n -ss 00:12:30 -i data/raw_clips/mon_match_complet.mp4 -t 30 \
+python scripts/extract_frames.py -input data/raw_clips/my_match.mp4 -count 60 \
+  -output data/annotation/images -prefix my_match
+```
+
+### Cut a match video into excerpts
+
+**Extract 30 seconds from 12 min 30 s**
+
+```bash
+ffmpeg -n -ss 00:12:30 -i data/raw_clips/my_full_match.mp4 -t 30 \
   -map 0:v:0 -map '0:a:0?' -c:v libx264 -crf 18 -c:a aac \
-  data/raw_clips/mon_match_12m30_30s.mp4
+  data/raw_clips/my_match_12m30_30s.mp4
 ```
 
-Remplace `00:12:30` par l’instant de départ et `30` par la durée souhaitée en
-secondes. La résolution est conservée. L’audio est inclus si la vidéo en contient.
+Replace `00:12:30` with the start instant and `30` with the wanted duration in
+seconds. The resolution is kept. Audio is included when the video has some.
 
-**Découper le match entier en extraits successifs de 30 secondes**
+**Cut the whole match into successive 30-second excerpts**
 
 ```bash
-duree=30
-dossier="data/raw_clips/mon_match_${duree}s"
-mkdir "$dossier" && ffmpeg -i data/raw_clips/mon_match_complet.mp4 \
+duration=30
+folder="data/raw_clips/my_match_${duration}s"
+mkdir "$folder" && ffmpeg -i data/raw_clips/my_full_match.mp4 \
   -map 0:v:0 -map '0:a:0?' -c:v libx264 -crf 18 -c:a aac \
-  -force_key_frames "expr:gte(t,n_forced*${duree})" \
-  -f segment -segment_time "$duree" -reset_timestamps 1 \
-  "$dossier/extrait_%03d.mp4"
+  -force_key_frames "expr:gte(t,n_forced*${duration})" \
+  -f segment -segment_time "$duration" -reset_timestamps 1 \
+  "$folder/excerpt_%03d.mp4"
 ```
 
-Modifie `duree` pour choisir la longueur des extraits. Le dernier peut être plus
-court. Le découpage démarre uniquement si le dossier de destination est créé,
-ce qui évite de remplacer des extraits existants.
+Change `duration` to choose the excerpt length. The last one may be shorter.
+Cutting only starts when the destination folder is created, which avoids
+overwriting existing excerpts.
 
-## Installation locale sous WSL
+## Local installation under WSL
 
-Dans Ubuntu (WSL), depuis la racine du dépôt, utilise Python 3.11 et FFmpeg.
-Avec Python 3.11 déjà installé, crée l’environnement avec `python3.11 -m venv .venv`.
-Avec [uv](https://docs.astral.sh/uv/getting-started/installation/), tu peux installer
-Python 3.11 et créer l’environnement en une commande.
+In Ubuntu (WSL), from the repository root, use Python 3.11 and FFmpeg.
+With Python 3.11 already installed, create the environment with `python3.11 -m venv .venv`.
+With [uv](https://docs.astral.sh/uv/getting-started/installation/), you can install
+Python 3.11 and create the environment in one command.
 
 ```bash
 uv venv --python 3.11 --seed .venv
@@ -144,131 +156,139 @@ python -m pip install -e '.[dev]' --extra-index-url https://download.pytorch.org
 python -c 'import torch; print(torch.__version__, torch.cuda.is_available())'
 ```
 
-La dernière commande doit afficher `True` pour utiliser le GPU NVIDIA.
+The last command must print `True` to use the NVIDIA GPU.
 
-### Lancer les notebooks
+### Run the notebooks
 
-Lance `jupyter notebook` depuis le dépôt avec le `venv` activé. Dans VS Code,
-ouvre le dossier depuis un terminal WSL avec `code .` et sélectionne
-`.venv/bin/python` comme interpréteur et comme noyau Jupyter.
-Pour enregistrer un noyau nommé, lance depuis l’environnement activé
-`python -m ipykernel install --user --name pivot-ai-handball-wsl --display-name "Python (Pivot AI Handball WSL)"`.
+Run `jupyter notebook` from the repository with the `venv` activated. In VS Code,
+open the folder from a WSL terminal with `code .` and select
+`.venv/bin/python` as interpreter and Jupyter kernel.
+To register a named kernel, run from the activated environment
+`python -m ipykernel install --user --name handball-ai-wsl --display-name "Python (handball-ai WSL)"`.
 
-Dans `notebooks/pivot_ai.ipynb`, indique le nom du clip déposé dans
-`data/raw_clips/`. Le notebook charge le JSON de calibration à côté de la vidéo.
-Les résultats sont écrits dans `data/outputs/`.
+In `notebooks/handball_ai.ipynb`, set the name of the clip placed in
+`data/raw_clips/`. The notebook loads the court mapping JSON next to the video.
+Results are written to `data/outputs/`.
 
-### Lancer le pipeline via CLI
+### Run the pipeline from the CLI
 
 ```bash
-pivot-ai traiter \
-  --video data/raw_clips/mon_clip.mp4 \
+handball-ai process \
+  --video data/raw_clips/my_clip.mp4 \
   --output data/outputs/ \
-  --modele models/handball_yolo26m.pt \
+  --model models/handball_yolo26m.pt \
   --subsample 2
 ```
 
-Flags optionnels :
-- `--debut HH:MM:SS:cc` indique où commencer dans la vidéo, avec `cc` en centièmes de seconde (`00:00:00:00` par défaut). La notation FFmpeg `HH:MM:SS.cc` est aussi acceptée.
-- `--duree SECONDES` limite le traitement à cette durée à partir du début choisi. Sans cette option, le traitement va jusqu'à la fin de la vidéo.
-- `--modele models/handball_yolo26m.pt` (obligatoire) : poids YOLO entraînés sur le handball.
-- `--homographie CHEMIN` : remplace le chemin de calibration déduit de la vidéo.
-- `--no-video-radar` désactive la vidéo de sortie. Par défaut, elle empile la source annotée et la projection. Chaque panneau mesure 1920 × 540 (32:9).
-- `--no-fisheye` désactive la correction radiale du radar. Par défaut, si A à F sont présents, elle utilise A–E–B et C–F–D et recale les quatre coins sur un rectangle de 40 × 20 m. La vidéo source reste intacte.
-- `--equipes` active la classification par couleur de maillot.
-- `--stats` active le calcul et l'export des statistiques. Combinez les deux options pour exporter aussi les largeurs des blocs défensifs.
-- `--no-decoupage` : ne decoupe pas les actions detectees
-- `--tracker {bytetrack,botsort}` : backend de tracking. `bytetrack` (defaut,
-  rapide, mouvement seul) ou `botsort` (ReID par apparence : maintient les IDs
-  au contact/occlusion, plus lent). `botsort` necessite un vrai modele YOLO.
-- `--min-frames-track N` : ecarte les trackers vus sur moins de N frames (fragments)
+Options:
+- `--model models/handball_yolo26m.pt` (required): YOLO weights trained on handball.
+- `--start HH:MM:SS:cc` sets where to start in the video, with `cc` in hundredths of a second (`00:00:00:00` by default). The FFmpeg notation `HH:MM:SS.cc` is accepted too.
+- `--duration SECONDS` limits the processing to this duration from the chosen start. Without it, processing goes to the end of the video.
+- `--court-mapping PATH`: replaces the court mapping path derived from the video.
+- `--exclude CLASS` ignores a model class by name (repeatable), e.g. `--exclude ball`.
+- `--conf THRESHOLD`: YOLO confidence threshold between 0 and 1 (0.35 by default).
+- `--no-radar-video` disables the output video. By default it stacks the annotated source above the projection. Each panel is 1920 × 540 (32:9).
+- `--no-fisheye` disables the radial correction of the radar. By default, when A to F are present, it uses A–E–B and C–F–D and maps the four corners onto a 40 × 20 m rectangle. The source video is left untouched.
+- `--teams` enables team classification by jersey colour.
+- `--stats` enables the computation and export of the statistics. Combine both options to also export the defensive block widths.
+- `--no-clips`: does not cut the detected actions.
+- `--tracker {bytetrack,botsort}`: tracking backend. `bytetrack` (default,
+  fast, motion only) or `botsort` (appearance ReID: keeps the IDs on
+  contact/occlusion, slower).
+- `--min-track-frames N`: drops the trackers seen on fewer than N frames (fragments).
 
-Par exemple, ajoutez `--debut 00:01:00:25 --duree 30` pour analyser 30 secondes à partir de 1 min et 25 centièmes. Le pipeline se positionne sur l'image la plus proche dans la vidéo source et traite directement la séquence. Les horodatages des résultats repartent de zéro.
+For example, add `--start 00:01:00:25 --duration 30` to analyse 30 seconds from 1 min and 25 hundredths. The pipeline seeks to the closest frame in the source video and processes the sequence directly. Result timestamps start from zero.
 
-Codes de sortie :
-- `0` : succes
-- `1` : erreur runtime (video ou homographie invalide, exception pipeline)
-- `2` : argument obligatoire manquant
+Exit codes:
+- `0`: success
+- `1`: runtime error (invalid video, court mapping or model, pipeline exception)
+- `2`: missing required argument
 
-### Créer la calibration à la souris
+Outputs in the `--output` folder:
+- `player_stats.csv` / `player_stats.parquet` (with `--stats`)
+- `defensive_block_width_home.csv` / `defensive_block_width_away.csv` (with `--stats --teams`)
+- `match_radar.mp4` (unless `--no-radar-video`)
+- `actions/action_XXX_Ns.mp4` (unless `--no-clips`, needs `ffmpeg`)
 
-Depuis la racine du dépôt, dans un environnement avec affichage graphique et Tkinter
-(`python3-tk` sous Debian ou Ubuntu), lance :
+### Create the court mapping with the mouse
+
+From the repository root, in an environment with a graphical display and Tkinter
+(`python3-tk` on Debian or Ubuntu), run:
 
 ```bash
-python -m scripts.calibrer_terrain data/raw_clips/mon_clip.mp4
+python -m scripts.calibrate_court data/raw_clips/my_clip.mp4
 ```
 
-Le script affiche la frame du milieu. Utilise `--frame 250` pour choisir une autre
-frame. Pour calibrer à partir d’une image fixe, passe l’image en entrée et ajoute
-`--video-reference chemin/du/match.mp4`. Clique sur un repère du schéma sous l’image,
-puis clique sur son emplacement dans l’image ou dans la marge grise. La molette
-zoome autour du pointeur. Fais glisser avec le bouton droit pour déplacer la vue,
-ou clique sur **Ajuster l’image** pour revenir à la vue d’ensemble.
-Par défaut, la marge ajoute 10 %
-de la largeur à gauche et à droite, et 10 % de la hauteur en haut et en bas.
-Utilise `--marge 150` pour régler les quatre côtés à 150 pixels. Les coordonnées
-du JSON restent relatives à l’image d’origine et peuvent donc dépasser son cadre.
-Place au moins quatre repères répartis sur le terrain,
-puis clique sur **Enregistrer**. Pour `data/raw_clips/mon_clip.mp4`, le script écrit
-`data/raw_clips/mon_clip.mp4.correspondances.json`. Le notebook et la CLI retrouvent
-ce fichier automatiquement.
-S’il existe déjà, indique une autre destination avec `--sortie` ou utilise `--force`
-pour le remplacer.
+The script shows the middle frame. Use `--frame 250` to pick another
+frame. To calibrate from a still image, pass the image as input and add
+`--reference-video path/to/match.mp4`. Click a reference point on the diagram below the image,
+then click its location in the image or in the grey margin. The wheel
+zooms around the pointer. Drag with the right button to move the view,
+or click **Fit image** to go back to the overview.
+By default, the margin adds 10 %
+of the width on the left and right, and 10 % of the height at the top and bottom.
+Use `--margin 150` to set all four sides to 150 pixels. JSON coordinates
+stay relative to the original image and may therefore exceed its frame.
+Place at least four reference points spread over the court,
+then click **Save**. For `data/raw_clips/my_clip.mp4`, the script writes
+`data/raw_clips/my_clip.mp4.court_mapping.json`. The notebook and the CLI find
+this file automatically.
+If it already exists, give another destination with `--output` or use `--force`
+to replace it.
 
-### Format du fichier homographie
+### Court mapping format
 
-JSON, minimum 4 points (>= 5 active RANSAC). Voir `docs/correspondances_example.json` pour un modele.
+JSON, at least 4 points (>= 5 enables RANSAC). See `docs/court_mapping_example.json` for a template.
 
 ```json
 {
-  "A": {"pixel": [120, 540], "terrain_m": [0.0, 0.0]},
-  "B": {"pixel": [1800, 540], "terrain_m": [40.0, 0.0]},
-  "C": {"pixel": [1700, 300], "terrain_m": [40.0, 20.0]},
-  "D": {"pixel": [220, 300], "terrain_m": [0.0, 20.0]}
+  "A": {"pixel": [120, 540], "court_m": [0.0, 0.0]},
+  "B": {"pixel": [1800, 540], "court_m": [40.0, 0.0]},
+  "C": {"pixel": [1700, 300], "court_m": [40.0, 20.0]},
+  "D": {"pixel": [220, 300], "court_m": [0.0, 20.0]}
 }
 ```
 
-Les cles commencant par `_` sont traitees comme commentaires (utile pour documenter le JSON inline).
+Keys starting with `_` are treated as comments (handy to document the JSON inline).
 
 ## Tests
 
 ```bash
-pytest tests/ -v --cov=pivot_ai
+pytest tests/ -v --cov=handball_ai
 ```
 
-Tests qui requierent `ffmpeg` (3 tests de decoupage video) : auto-skip si `ffmpeg` n'est pas dans le PATH.
+Tests that need `ffmpeg` (3 video clipping tests) are skipped when `ffmpeg` is not in the PATH.
 
-## Conventions de code
+## Code conventions
 
-- Python 3.11+, type hints obligatoires sur les signatures publiques
-- Variables et fonctions en **snake_case francais** : `traiter_clip`, `calculer_distance_parcourue`, `dets_par_frame`
-- Docstrings courtes en francais, style Google
-- Logging au lieu de print
-- Pas de bare except
-- Tests pytest pour toute fonction critique
-- Ruff active avec `select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]`
+- Python 3.11+, type hints required on public signatures
+- Code, docstrings, comments, logs and documentation in **English**, snake_case names
+- Short Google-style docstrings
+- Logging instead of print
+- No bare except
+- pytest tests for every critical function
+- Ruff enabled with `select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]`
 
 ## Roadmap
 
-- [x] Squelette repo
-- [x] Refactor du code legacy en modules
-- [x] Migration Roboflow Cloud -> inference locale GPU (`Detector`)
-- [x] Module stats joueur (distance, vitesse, heatmap, bloc defensif)
-- [x] Decoupage actions par heuristique simple
-- [x] Pipeline match complet (avec interpolation et vidéo radar)
-- [x] CLI `pivot-ai traiter`
-- [x] Notebook d’inférence local
-- [x] Fine-tune modele YOLO handball (4 classes) + notebook d'entrainement
-- [x] Tracker BoT-SORT + ReID (maintient les IDs au contact) en option
-- [ ] Detection ballon -> possession et passes
-- [ ] Detection d'evenements (tirs, buts) par heuristique
-- [ ] Migration `sv.ByteTrack` vers le nouveau tracker supervision (`>=0.30`)
-- [ ] Determination automatique de l'equipe en attaque (sens de jeu)
-- [ ] Detection automatique lignes terrain (homographie auto)
-- [ ] Identification individuelle joueurs (numeros maillots)
-- [ ] Classification d'evenements ML
+- [x] Repository skeleton
+- [x] Refactor of the legacy code into modules
+- [x] Migration from Roboflow Cloud to local GPU inference (`Detector`)
+- [x] Player stats module (distance, speed, heatmap, defensive block)
+- [x] Action split with a simple heuristic
+- [x] Full match pipeline (with interpolation and radar video)
+- [x] `handball-ai process` CLI
+- [x] Local inference notebook
+- [x] Fine-tuned handball YOLO model (4 classes) + training notebook
+- [x] Optional BoT-SORT + ReID tracker (keeps the IDs on contact)
+- [ ] Ball detection -> possession and passes
+- [ ] Event detection (shots, goals) with heuristics
+- [ ] Migration from `sv.ByteTrack` to the new supervision tracker (`>=0.30`)
+- [ ] Automatic detection of the attacking team (direction of play)
+- [ ] Automatic court line detection (automatic homography)
+- [ ] Individual player identification (jersey numbers)
+- [ ] ML event classification
 
 ## Licence
 
-Proprietaire. Tous droits reserves.
+Proprietary. All rights reserved.

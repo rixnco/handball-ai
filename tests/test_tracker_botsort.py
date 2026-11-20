@@ -1,8 +1,8 @@
-"""Tests du backend BoT-SORT : config yaml + routage pipeline.
+"""BoT-SORT backend tests: yaml configuration and pipeline routing.
 
-Le comportement reel de BoT-SORT+ReID (Ultralytics model.track) necessite
-torch + GPU et se valide avec un GPU. Ici on verifie ce qui est testable en
-local : la config est valide, et le pipeline route bien vers le bon backend.
+The real BoT-SORT + ReID behaviour (Ultralytics model.track) needs torch and
+a GPU. Here we check what is testable locally: the configuration is valid and
+the pipeline routes to the right backend.
 """
 
 from __future__ import annotations
@@ -13,59 +13,54 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from pivot_ai.tracking import CHEMIN_CONFIG_BOTSORT
+from handball_ai.pipeline import process_match
+from handball_ai.tracking import BOTSORT_CONFIG_PATH
+from tests.conftest import make_fake_video
+
+_MAPPING = {
+    "A": {"pixel": (0, 0), "court_m": (0.0, 0.0)},
+    "B": {"pixel": (320, 0), "court_m": (40.0, 0.0)},
+    "C": {"pixel": (320, 240), "court_m": (40.0, 20.0)},
+    "D": {"pixel": (0, 240), "court_m": (0.0, 20.0)},
+}
 
 
-def test_config_botsort_existe_et_valide() -> None:
-    """La config BoT-SORT est livree et active le ReID."""
-    assert CHEMIN_CONFIG_BOTSORT.exists(), f"Config absente : {CHEMIN_CONFIG_BOTSORT}"
-    cfg = yaml.safe_load(CHEMIN_CONFIG_BOTSORT.read_text(encoding="utf-8"))
+def test_botsort_config_exists_and_valid() -> None:
+    """The BoT-SORT configuration ships with the package and enables ReID."""
+    assert BOTSORT_CONFIG_PATH.exists(), f"Missing configuration: {BOTSORT_CONFIG_PATH}"
+    cfg = yaml.safe_load(BOTSORT_CONFIG_PATH.read_text(encoding="utf-8"))
     assert cfg["tracker_type"] == "botsort"
     assert cfg["with_reid"] is True
-    # buffer augmente pour survivre aux occlusions
+    # Larger buffer to survive occlusions
     assert cfg["track_buffer"] >= 30
 
 
-def test_config_botsort_dans_le_package() -> None:
-    """La config est bien sous pivot_ai/trackers/ (packagee)."""
-    assert CHEMIN_CONFIG_BOTSORT.parent.name == "trackers"
-    assert CHEMIN_CONFIG_BOTSORT.parent.parent.name == "pivot_ai"
+def test_botsort_config_inside_package() -> None:
+    """The configuration lives under handball_ai/trackers/ (packaged)."""
+    assert BOTSORT_CONFIG_PATH.parent.name == "trackers"
+    assert BOTSORT_CONFIG_PATH.parent.parent.name == "handball_ai"
 
 
-def _homographie_identite() -> dict:
-    return {
-        "A": {"pixel": (0, 0), "terrain_m": (0.0, 0.0)},
-        "B": {"pixel": (320, 0), "terrain_m": (40.0, 0.0)},
-        "C": {"pixel": (320, 240), "terrain_m": (40.0, 20.0)},
-        "D": {"pixel": (0, 240), "terrain_m": (0.0, 20.0)},
-    }
-
-
-def test_pipeline_route_vers_botsort(tmp_path: Path) -> None:
-    """tracker='botsort' appelle tracker_video_botsort, pas la voie ByteTrack."""
-    from tests.conftest import generer_video_factice
-
+def test_pipeline_routes_to_botsort(tmp_path: Path) -> None:
+    """tracker='botsort' calls track_video_botsort, not the ByteTrack path."""
     source = tmp_path / "match.mp4"
-    generer_video_factice(source, nb_frames=20, fps=25.0, largeur=320, hauteur=240)
+    make_fake_video(source, nb_frames=20, fps=25.0, width=320, height=240)
 
-    # Stub : le backend botsort est mocke pour renvoyer un tracking vide
-    # (on verifie seulement le ROUTAGE, pas le tracker reel).
-    from pivot_ai.pipeline import traiter_match_complet
-
-    faux_retour = ({}, {})  # (detections_trackees, classe_finale) vides
+    # The botsort backend is mocked to return an empty tracking
+    # (only the ROUTING is checked, not the real tracker).
     with (
-        patch("pivot_ai.pipeline.tracker_video_botsort", return_value=faux_retour) as mock_bot,
-        patch("pivot_ai.pipeline.detect_video") as mock_detect,
-        patch("pivot_ai.pipeline.tracker_detections") as mock_byte,
+        patch("handball_ai.pipeline.track_video_botsort", return_value=({}, {})) as mock_bot,
+        patch("handball_ai.pipeline.detect_video") as mock_detect,
+        patch("handball_ai.pipeline.track_detections") as mock_byte,
     ):
-        traiter_match_complet(
-            chemin_video=source,
-            correspondances_homographie=_homographie_identite(),
-            dossier_sortie=tmp_path / "out",
+        process_match(
+            video_path=source,
+            court_mapping=_MAPPING,
+            output_dir=tmp_path / "out",
+            detector=object(),  # never used (mocked backend)
             subsample=5,
-            generer_video_radar=False,
-            decouper_actions=False,
-            detecteur=object(),  # jamais utilise (backend mocke)
+            with_radar_video=False,
+            with_clips=False,
             tracker="botsort",
         )
     mock_bot.assert_called_once()
@@ -73,18 +68,15 @@ def test_pipeline_route_vers_botsort(tmp_path: Path) -> None:
     mock_byte.assert_not_called()
 
 
-def test_pipeline_tracker_inconnu_leve_erreur(tmp_path: Path) -> None:
-    """Un backend inconnu leve ValueError."""
-    from pivot_ai.pipeline import traiter_match_complet
-    from tests.conftest import generer_video_factice
-
+def test_pipeline_unknown_tracker_raises(tmp_path: Path) -> None:
+    """An unknown backend raises ValueError."""
     source = tmp_path / "match.mp4"
-    generer_video_factice(source, nb_frames=10, fps=25.0, largeur=320, hauteur=240)
-    with pytest.raises(ValueError, match="tracker inconnu"):
-        traiter_match_complet(
-            chemin_video=source,
-            correspondances_homographie=_homographie_identite(),
-            dossier_sortie=tmp_path / "out",
-            detecteur=object(),
+    make_fake_video(source, nb_frames=10, fps=25.0, width=320, height=240)
+    with pytest.raises(ValueError, match="Unknown tracker"):
+        process_match(
+            video_path=source,
+            court_mapping=_MAPPING,
+            output_dir=tmp_path / "out",
+            detector=object(),
             tracker="deepsort",
         )

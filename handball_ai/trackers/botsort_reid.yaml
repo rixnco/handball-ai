@@ -1,0 +1,28 @@
+# BoT-SORT configuration with appearance re-identification (ReID).
+# Ultralytics schema (>= 8.3). Used by track_video_botsort.
+#
+# ReID computes a visual fingerprint per player: on contact or occlusion,
+# BoT-SORT compares appearances to give the right tracker_id back to the right
+# player, which ByteTrack (motion only) cannot do.
+tracker_type: botsort
+
+# Detection thresholds (high/low confidence association, ByteTrack style)
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+
+# Longer buffer than the default (30) to survive dense handball occlusions
+# without losing the ID (in effective frames fed to the tracker).
+track_buffer: 60
+match_thresh: 0.8
+fuse_score: true
+
+# Global Motion Compensation: compensates camera motion (moving broadcast shot)
+gmc_method: sparseOptFlow
+
+# ReID
+proximity_thresh: 0.5
+appearance_thresh: 0.25
+with_reid: true
+# "auto": reuses the YOLO model features, no ReID model to download
+model: auto

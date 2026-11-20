@@ -1,30 +1,30 @@
-# Prompt pour Claude Code - Mission pivot-ai-handball
+# Prompt for Claude Code - handball-ai mission
 
-Copie le contenu ci-dessous quand tu lances Claude Code a la racine du repo.
+Copy the content below when you start Claude Code at the root of the repository.
 
 ---
 
-Lis d'abord `CLAUDE.md` a la racine. Il contient le contexte complet de la mission, les conventions de code, les modules deja implementes et ceux a finir, et le workflow git attendu.
+First read `CLAUDE.md` at the root. It holds the full mission context, the code conventions, the implemented modules and the ones to finish, and the expected git workflow.
 
-Lis ensuite `legacy/pipeline_original.py` en entier. C'est la specification metier.
+Then read `legacy/pipeline_original.py` entirely. It is the business specification.
 
-Lis enfin la structure du projet : `find . -type f -name "*.py" | head -30`.
+Finally read the project structure: `find . -type f -name "*.py" | head -30`.
 
-Une fois ces 3 lectures faites :
+Once these 3 readings are done:
 
-1. Verifie que les modules COMPLETS marchent : lance `pytest tests/ -v`. Si des tests echouent, identifie pourquoi (probablement deps manquantes ou bugs mineurs dans mon scaffolding).
+1. Check that the COMPLETE modules work: run `pytest tests/ -v`. If tests fail, find out why (probably missing deps or minor bugs in my scaffolding).
 
-2. Propose-moi en quelques lignes ton plan d'execution pour les etapes 2 a 6 du CLAUDE.md. Quels modules d'abord, dans quel ordre, quels risques tu identifies, ou tu as des doutes sur la specification metier.
+2. Propose in a few lines your execution plan for steps 2 to 6 of CLAUDE.md. Which modules first, in which order, which risks you see, where you have doubts about the business specification.
 
-3. Attends mon GO avant de coder.
+3. Wait for my GO before coding.
 
-Une fois mon GO recu :
-- Cree une branche par feature (`feat/stats-joueur`, `feat/decoupage`, etc.)
-- Code une etape complete, commit, ouvre une PR de cette feature, attends mon validation, merge sur main, passe a la suivante
-- A chaque etape, MONTRE-MOI un test concret qui prouve que ca marche
-- Pas de TODO laisses, pas d'inventions sur les libs
-- Si tu as un doute, demande au lieu d'inventer
+Once I give the GO:
+- Create one branch per feature (`feat/player-stats`, `feat/clipping`, etc.)
+- Code a full step, commit, open a PR for this feature, wait for my approval, merge into main, move on to the next one
+- At each step, SHOW ME a concrete test proving that it works
+- No TODO left, no invented library APIs
+- When in doubt, ask instead of inventing
 
-Quand tu as besoin de tester sur GPU, on aura une iteration ou je lance le notebook en local avec un GPU et te remonte les logs/erreurs.
+When you need to test on a GPU, we will have an iteration where I run the notebook locally with a GPU and send you the logs/errors.
 
-Demarre maintenant : lectures, verification tests, plan d'attaque.
+Start now: readings, test check, plan of attack.

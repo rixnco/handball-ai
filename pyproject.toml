@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pivot-ai-handball"
+name = "handball-ai"
 version = "0.1.0"
-description = "Pipeline computer vision pour scouting handball - detection, tracking, stats, decoupage automatique en actions."
+description = "Computer vision pipeline for handball scouting - detection, tracking, stats, automatic action clips."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
@@ -21,11 +21,11 @@ dependencies = [
     "ultralytics>=8.3.0",
     "supervision>=0.25.1,<0.30",
     "opencv-python-headless>=4.10.0.84",
-    # numpy 2.x supporte par toutes les deps cibles (opencv 4.10.0.84+, supervision 0.25+,
+    # numpy 2.x is supported by all target deps (opencv 4.10.0.84+, supervision 0.25+,
     # scikit-learn 1.5+, scipy 1.13+, polars 1.0+, pandas 2.2.2+, ultralytics 8.3+).
     "numpy>=1.26.0",
     "scikit-learn>=1.5.0",
-    # plotly.express utilise pandas.
+    # plotly.express uses pandas.
     "pandas>=2.2.2",
     "polars>=1.0.0",
     "scipy>=1.13.0",
@@ -48,15 +48,15 @@ dev = [
 ]
 
 [project.scripts]
-pivot-ai = "pivot_ai.cli:main"
+handball-ai = "handball_ai.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pivot_ai*"]
+include = ["handball_ai*"]
 exclude = ["tests*", "notebooks*", "legacy*", "data*"]
 
 [tool.setuptools.package-data]
-pivot_ai = ["trackers/*.yaml"]
+handball_ai = ["trackers/*.yaml"]
 
 [tool.ruff]
 line-length = 100
@@ -64,7 +64,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
-ignore = ["E501", "N803", "N806"]  # snake_case francais peut avoir des majuscules contextuelles
+ignore = ["E501", "N803", "N806"]  # allows math-style capitals (H, X) in names
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

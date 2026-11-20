@@ -1,11 +1,10 @@
-"""Tests de validation des notebooks locaux et de leurs builders."""
+"""Validation tests of the local notebooks and their builders."""
 
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -13,148 +12,148 @@ import pytest
 NOTEBOOKS_DIR = Path(__file__).parent.parent / "notebooks"
 SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 
-NOTEBOOK_INFERENCE = NOTEBOOKS_DIR / "pivot_ai.ipynb"
-NOTEBOOK_TRAIN = NOTEBOOKS_DIR / "train_handball_yolo.ipynb"
+INFERENCE_NOTEBOOK = NOTEBOOKS_DIR / "handball_ai.ipynb"
+TRAIN_NOTEBOOK = NOTEBOOKS_DIR / "train_handball_yolo.ipynb"
 
-TOUS_NOTEBOOKS = [NOTEBOOK_INFERENCE, NOTEBOOK_TRAIN]
+ALL_NOTEBOOKS = [INFERENCE_NOTEBOOK, TRAIN_NOTEBOOK]
 
 
 # ---------------------------------------------------------------------------
-# Checks generiques appliques aux deux notebooks
+# Generic checks applied to both notebooks
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("notebook", TOUS_NOTEBOOKS, ids=lambda p: p.name)
-def test_notebook_existe(notebook: Path) -> None:
-    """Le fichier notebook est present."""
-    assert notebook.exists(), f"Notebook absent : {notebook}"
+@pytest.mark.parametrize("notebook", ALL_NOTEBOOKS, ids=lambda p: p.name)
+def test_notebook_exists(notebook: Path) -> None:
+    """The notebook file is present."""
+    assert notebook.exists(), f"Missing notebook: {notebook}"
 
 
-@pytest.mark.parametrize("notebook", TOUS_NOTEBOOKS, ids=lambda p: p.name)
-def test_notebook_json_valide(notebook: Path) -> None:
-    """Le notebook est un JSON valide avec la structure attendue."""
-    contenu = json.loads(notebook.read_text(encoding="utf-8"))
-    assert isinstance(contenu, dict)
-    assert "cells" in contenu
-    assert "metadata" in contenu
-    assert "nbformat" in contenu
+@pytest.mark.parametrize("notebook", ALL_NOTEBOOKS, ids=lambda p: p.name)
+def test_notebook_valid_json(notebook: Path) -> None:
+    """The notebook is valid JSON with the expected structure."""
+    content = json.loads(notebook.read_text(encoding="utf-8"))
+    assert isinstance(content, dict)
+    assert "cells" in content
+    assert "metadata" in content
+    assert "nbformat" in content
 
 
-@pytest.mark.parametrize("notebook", TOUS_NOTEBOOKS, ids=lambda p: p.name)
-def test_notebook_utilise_le_noyau_python_local(notebook: Path) -> None:
-    """Les notebooks utilisent un noyau Jupyter Python standard."""
+@pytest.mark.parametrize("notebook", ALL_NOTEBOOKS, ids=lambda p: p.name)
+def test_notebook_uses_local_python_kernel(notebook: Path) -> None:
+    """The notebooks use a standard Python Jupyter kernel."""
     metadata = json.loads(notebook.read_text(encoding="utf-8"))["metadata"]
     assert metadata["kernelspec"]["name"] == "python3"
     assert metadata["language_info"]["name"] == "python"
 
 
-@pytest.mark.parametrize("notebook", TOUS_NOTEBOOKS, ids=lambda p: p.name)
-def test_notebook_cellules_bien_typees(notebook: Path) -> None:
-    """Chaque cellule a un cell_type valide et une source."""
-    contenu = json.loads(notebook.read_text(encoding="utf-8"))
-    for i, cell in enumerate(contenu["cells"]):
-        assert cell["cell_type"] in {"markdown", "code"}, f"Cellule {i} : type inconnu"
-        assert "source" in cell, f"Cellule {i} sans source"
+@pytest.mark.parametrize("notebook", ALL_NOTEBOOKS, ids=lambda p: p.name)
+def test_notebook_cells_well_typed(notebook: Path) -> None:
+    """Every cell has a valid cell_type and a source."""
+    content = json.loads(notebook.read_text(encoding="utf-8"))
+    for i, cell in enumerate(content["cells"]):
+        assert cell["cell_type"] in {"markdown", "code"}, f"Cell {i}: unknown type"
+        assert "source" in cell, f"Cell {i} without source"
 
 
-@pytest.mark.parametrize("notebook", TOUS_NOTEBOOKS, ids=lambda p: p.name)
-def test_notebook_cellules_code_parse_python(notebook: Path) -> None:
-    """Chaque cellule code parse en Python valide (magics !/% remplaces par pass)."""
-    contenu = json.loads(notebook.read_text(encoding="utf-8"))
-    for i, cell in enumerate(contenu["cells"]):
+@pytest.mark.parametrize("notebook", ALL_NOTEBOOKS, ids=lambda p: p.name)
+def test_notebook_code_cells_parse(notebook: Path) -> None:
+    """Every code cell parses as valid Python (!/% magics replaced by pass)."""
+    content = json.loads(notebook.read_text(encoding="utf-8"))
+    for i, cell in enumerate(content["cells"]):
         if cell["cell_type"] != "code":
             continue
-        src = "".join(cell["source"])
-        lignes = []
-        for ligne in src.split("\n"):
-            stripped = ligne.lstrip()
+        lines = []
+        for line in "".join(cell["source"]).split("\n"):
+            stripped = line.lstrip()
             if stripped.startswith(("!", "%")):
-                indent = ligne[: len(ligne) - len(stripped)]
-                lignes.append(indent + "pass")
+                lines.append(line[: len(line) - len(stripped)] + "pass")
             else:
-                lignes.append(ligne)
+                lines.append(line)
         try:
-            ast.parse("\n".join(lignes))
+            ast.parse("\n".join(lines))
         except SyntaxError as exc:
-            raise AssertionError(f"{notebook.name} cellule {i} : SyntaxError {exc}") from exc
+            raise AssertionError(f"{notebook.name} cell {i}: SyntaxError {exc}") from exc
 
 
-@pytest.mark.parametrize("notebook", TOUS_NOTEBOOKS, ids=lambda p: p.name)
-def test_notebook_pas_de_token_en_dur(notebook: Path) -> None:
-    """Aucun token/cle en dur dans les notebooks."""
-    contenu = notebook.read_text(encoding="utf-8")
-    assert "ghp_" not in contenu
-    assert "github_pat_" not in contenu
-
-
-# ---------------------------------------------------------------------------
-# Checks specifiques au notebook d'inference
-# ---------------------------------------------------------------------------
-
-
-def test_inference_utilise_les_dossiers_locaux() -> None:
-    """Le notebook retrouve les vidéos, la calibration et les sorties dans le dépôt."""
-    contenu = NOTEBOOK_INFERENCE.read_text(encoding="utf-8")
-    assert "raw_clips" in contenu
-    assert "chemin_correspondances_video(CLIP)" in contenu
-    assert "outputs" in contenu
-
-
-def test_inference_appelle_pipeline() -> None:
-    """Le notebook d'inference utilise traiter_match_complet."""
-    contenu = NOTEBOOK_INFERENCE.read_text(encoding="utf-8")
-    assert "traiter_match_complet" in contenu
-    assert "pivot_ai.pipeline" in contenu
-
-
-def test_inference_propose_modele_handball() -> None:
-    """Le notebook d'inference propose de charger le modele handball fine-tune."""
-    contenu = NOTEBOOK_INFERENCE.read_text(encoding="utf-8")
-    assert "Detector(CHEMIN_MODELE_HANDBALL)" in contenu
-    assert "detecteur=detecteur" in contenu
+@pytest.mark.parametrize("notebook", ALL_NOTEBOOKS, ids=lambda p: p.name)
+def test_notebook_no_hardcoded_token(notebook: Path) -> None:
+    """No hard-coded token or key in the notebooks."""
+    content = notebook.read_text(encoding="utf-8")
+    assert "ghp_" not in content
+    assert "github_pat_" not in content
 
 
 # ---------------------------------------------------------------------------
-# Checks specifiques au notebook d'entrainement
+# Inference notebook checks
 # ---------------------------------------------------------------------------
 
 
-def test_train_utilise_roboflow_et_dataset() -> None:
-    """Le notebook d'entrainement telecharge le dataset handball via Roboflow."""
-    contenu = NOTEBOOK_TRAIN.read_text(encoding="utf-8")
-    assert "roboflow" in contenu.lower()
-    assert "handball-detection-fj8rc" in contenu
-    assert "erics-workspace-it3ft" in contenu
-    assert "ROBOFLOW_API_KEY" in contenu
+def test_inference_uses_local_folders() -> None:
+    """The notebook finds the videos, court mapping and outputs in the repository."""
+    content = INFERENCE_NOTEBOOK.read_text(encoding="utf-8")
+    assert "raw_clips" in content
+    assert "court_mapping_path(CLIP)" in content
+    assert "outputs" in content
 
 
-def test_train_entraine_et_exporte() -> None:
-    """Le notebook entraîne un YOLO et exporte best.pt dans le dossier models."""
-    contenu = NOTEBOOK_TRAIN.read_text(encoding="utf-8")
-    assert "model.train" in contenu
-    assert "YOLO_BASE" in contenu
-    assert "yolo26m" in contenu
-    assert "Detector(" in contenu
+def test_inference_calls_pipeline() -> None:
+    """The inference notebook uses process_match."""
+    content = INFERENCE_NOTEBOOK.read_text(encoding="utf-8")
+    assert "process_match" in content
+    assert "handball_ai.pipeline" in content
+
+
+def test_inference_loads_handball_model() -> None:
+    """The inference notebook loads the fine-tuned handball model."""
+    content = INFERENCE_NOTEBOOK.read_text(encoding="utf-8")
+    assert "Detector(HANDBALL_MODEL_PATH)" in content
+    assert "detector=detector" in content
 
 
 # ---------------------------------------------------------------------------
-# Idempotence des builders
+# Training notebook checks
+# ---------------------------------------------------------------------------
+
+
+def test_train_uses_roboflow_dataset() -> None:
+    """The training notebook downloads the handball dataset from Roboflow."""
+    content = TRAIN_NOTEBOOK.read_text(encoding="utf-8")
+    assert "roboflow" in content.lower()
+    assert "handball-detection-fj8rc" in content
+    assert "erics-workspace-it3ft" in content
+    assert "ROBOFLOW_API_KEY" in content
+
+
+def test_train_trains_and_exports() -> None:
+    """The notebook trains a YOLO and exports best.pt to the models folder."""
+    content = TRAIN_NOTEBOOK.read_text(encoding="utf-8")
+    assert "model.train" in content
+    assert "YOLO_BASE" in content
+    assert "yolo26m" in content
+    assert "Detector(" in content
+
+
+# ---------------------------------------------------------------------------
+# Builders stay in sync with the committed notebooks
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("builder", "notebook"),
     [
-        ("build_notebook.py", NOTEBOOK_INFERENCE),
-        ("build_train_notebook.py", NOTEBOOK_TRAIN),
+        ("build_notebook.py", INFERENCE_NOTEBOOK),
+        ("build_train_notebook.py", TRAIN_NOTEBOOK),
     ],
     ids=["inference", "train"],
 )
-def test_builder_notebook_idempotent(builder: str, notebook: Path) -> None:
-    """Chaque builder reecrit le meme JSON octet pour octet."""
-    script = SCRIPTS_DIR / builder
-    assert script.exists()
-    avant = notebook.read_bytes()
-    subprocess.run([sys.executable, str(script)], check=True, capture_output=True)
-    apres = notebook.read_bytes()
-    assert avant == apres, f"{builder} n'est pas idempotent"
+def test_builder_matches_notebook(builder: str, notebook: Path) -> None:
+    """Each builder produces the committed JSON byte for byte, without writing it."""
+    spec = importlib.util.spec_from_file_location(builder.removesuffix(".py"), SCRIPTS_DIR / builder)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    expected = json.dumps(module.build_notebook(), indent=1, ensure_ascii=False) + "\n"
+    assert notebook.read_text(encoding="utf-8") == expected, (
+        f"{notebook.name} differs from {builder}: run `python scripts/{builder}`"
+    )

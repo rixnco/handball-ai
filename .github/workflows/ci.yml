@@ -27,8 +27,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Lint avec ruff
-        run: ruff check pivot_ai/ tests/
+      - name: Lint with ruff
+        run: ruff check handball_ai/ scripts/ tests/
 
       - name: Tests pytest
-        run: pytest tests/ -v --cov=pivot_ai --cov-report=term-missing
+        run: pytest tests/ -v --cov=handball_ai --cov-report=term-missing

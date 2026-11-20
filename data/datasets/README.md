@@ -1,14 +1,14 @@
-# Provenance des datasets d’entraînement
+# Training dataset provenance
 
-L’export Roboflow Universe utilise le format d’annotation YOLOv8 (compatible YOLO26) et les classes
-`ball`, `goalkeeper`, `players` et `referees`. Ses fichiers
-`README.dataset.txt`, `README.roboflow.txt` et `data.yaml` d’origine sont
-conservés dans son dossier.
+The Roboflow Universe export uses the YOLOv8 annotation format (compatible with YOLO26) and the classes
+`ball`, `goalkeeper`, `players` and `referees`. Its original
+`README.dataset.txt`, `README.roboflow.txt` and `data.yaml` files are
+kept in its folder.
 
-| Dossier local | Source et attribution | Licence | Contenu de l’export |
+| Local folder | Source and attribution | Licence | Export content |
 | --- | --- | --- | --- |
-| `Handball-Detection-1` | [Handball Detection v3, espace `erics-workspace-it3ft`](https://universe.roboflow.com/erics-workspace-it3ft/handball-detection-fj8rc-omtda/dataset/3) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | 350 images, sans augmentation, export du 19 novembre 2026 |
+| `Handball-Detection-1` | [Handball Detection v3, `erics-workspace-it3ft` workspace](https://universe.roboflow.com/erics-workspace-it3ft/handball-detection-fj8rc-omtda/dataset/3) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | 350 images, no augmentation, exported on 19 November 2026 |
 
-Pour installer les données manuellement, télécharger la version indiquée au format
-YOLOv8 et extraire son contenu dans le dossier indiqué ci-dessus. Le
-notebook peut aussi télécharger l’export sélectionné dans `data/datasets`.
+To install the data manually, download the listed version in the YOLOv8 format
+and extract its content into the folder above. The notebook can also
+download the selected export into `data/datasets`.

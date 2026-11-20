@@ -1,5 +1,5 @@
 {
-  "name": "pivot-ai-handball",
+  "name": "handball-ai",
   "build": {
     "dockerfile": "Dockerfile"
   },
